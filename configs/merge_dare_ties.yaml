@@ -1,0 +1,12 @@
+models:
+- model: ./learner-full
+  parameters:
+    weight: 0.7
+    density: 0.5
+- model: ./grpo-full
+  parameters:
+    weight: 0.3
+    density: 0.5
+merge_method: dare_ties
+base_model: ./learner-full
+dtype: bfloat16

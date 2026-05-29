@@ -1,0 +1,9 @@
+models:
+- model: ./learner-full
+  parameters:
+    weight: 0.6
+- model: ./grpo-full
+  parameters:
+    weight: 0.4
+merge_method: linear
+dtype: bfloat16
