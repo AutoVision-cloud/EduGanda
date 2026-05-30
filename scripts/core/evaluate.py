@@ -1,7 +1,9 @@
 # scripts/core/evaluate.py
+import math
 import numpy as np
+from collections import Counter
 from scipy import stats
-from typing import List, Tuple, TYPE_CHECKING
+from typing import List, Tuple, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datasets import DatasetDict
@@ -67,8 +69,14 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
     accs = [s["correct"] / s["total"] for s in position_stats.values() if s["total"] > 0]
     spread = (max(accs) - min(accs)) * 100 if accs else 0.0
 
+    pred_dist = compute_prediction_distribution(predictions)
+    pred_entropy = compute_prediction_entropy(predictions)
+
     if label:
-        print(f"[{label}] accuracy={correct/total:.1%}  spread={spread:.1f}pp")
+        print(
+            f"[{label}] accuracy={correct/total:.1%}  spread={spread:.1f}pp  "
+            f"pred_entropy={pred_entropy:.3f}"
+        )
 
     return {
         "accuracy": correct / total,
@@ -78,6 +86,8 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
         "position_stats": position_stats,
         "category_stats": category_stats,
         "spread": spread,
+        "prediction_distribution": pred_dist,
+        "prediction_entropy": pred_entropy,
     }
 
 
@@ -130,3 +140,24 @@ def compute_calibration(
         acc = sum(c for c, m in zip(correct, mask) if m) / count if count > 0 else 0.0
         bins.append({"bin_center": round((lo + hi) / 2, 2), "accuracy": round(acc, 4), "count": count})
     return bins
+
+
+def compute_prediction_distribution(predictions: List[str]) -> Dict[str, float]:
+    """
+    Returns how often each letter (A/B/C/D) is predicted regardless of gold label.
+    Separates model positional bias from benchmark label distribution.
+    """
+    total = len(predictions)
+    counts = Counter(predictions)
+    return {l: round(counts.get(l, 0) / total, 4) for l in ["A", "B", "C", "D"]}
+
+
+def compute_prediction_entropy(predictions: List[str]) -> float:
+    """
+    Shannon entropy (bits) of the prediction distribution.
+    Max = 2.0 bits (uniform over 4 options). Low entropy = position-biased model.
+    """
+    total = len(predictions)
+    counts = Counter(predictions)
+    probs = [counts[l] / total for l in ["A", "B", "C", "D"] if counts.get(l, 0) > 0]
+    return round(-sum(p * math.log2(p) for p in probs), 4)

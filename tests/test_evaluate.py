@@ -1,6 +1,12 @@
 import numpy as np
 import pytest
-from scripts.core.evaluate import bootstrap_ci, mcnemar_test, compute_calibration
+from scripts.core.evaluate import (
+    bootstrap_ci,
+    mcnemar_test,
+    compute_calibration,
+    compute_prediction_distribution,
+    compute_prediction_entropy,
+)
 
 
 def test_bootstrap_ci_perfect_accuracy():
@@ -49,6 +55,32 @@ def test_compute_calibration_perfect_model():
     correct = [True] * 100
     bins = compute_calibration(confidences, correct, n_bins=5)
     assert any(b["accuracy"] == pytest.approx(1.0) for b in bins if b["count"] > 0)
+
+
+def test_prediction_distribution_sums_to_one():
+    preds = ["A"] * 50 + ["B"] * 30 + ["C"] * 15 + ["D"] * 5
+    dist = compute_prediction_distribution(preds)
+    assert set(dist.keys()) == {"A", "B", "C", "D"}
+    assert abs(sum(dist.values()) - 1.0) < 0.001
+
+
+def test_prediction_distribution_biased_model():
+    preds = ["B"] * 100
+    dist = compute_prediction_distribution(preds)
+    assert dist["B"] == pytest.approx(1.0)
+    assert dist["A"] == 0.0
+
+
+def test_prediction_entropy_uniform_is_max():
+    preds = ["A"] * 25 + ["B"] * 25 + ["C"] * 25 + ["D"] * 25
+    entropy = compute_prediction_entropy(preds)
+    assert entropy == pytest.approx(2.0, abs=0.01)  # log2(4) = 2 bits
+
+
+def test_prediction_entropy_biased_is_low():
+    preds = ["B"] * 100
+    entropy = compute_prediction_entropy(preds)
+    assert entropy == pytest.approx(0.0)
 
 
 def test_compute_calibration_returns_expected_structure():

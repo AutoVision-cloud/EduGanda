@@ -7,7 +7,7 @@ from scripts.core.data import build_training_dataset
 from scripts.core.train import train_sft
 from scripts.core.callbacks import DiagnosticCallback
 
-train_dataset = build_training_dataset(balance_strategy="oversample")
+train_dataset = build_training_dataset(use_permutation_augmentation=True, n_perms_per_item=3)
 print(f"Total training examples: {len(train_dataset)}")
 
 diagnostic_cb = DiagnosticCallback("results/diagnostics/sft_training_curves.jsonl")

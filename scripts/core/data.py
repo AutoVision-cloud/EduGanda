@@ -1,6 +1,8 @@
 # scripts/core/data.py
+import re
 import random
-from typing import List, Dict, Optional, TYPE_CHECKING
+from itertools import permutations as _permutations
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -82,10 +84,18 @@ def load_exercises_dataset() -> "Dataset":
     return ds.map(_format)
 
 
-def build_training_dataset(balance_strategy: str = "oversample") -> "Dataset":
+def build_training_dataset(
+    balance_strategy: str = "oversample",
+    use_permutation_augmentation: bool = True,
+    n_perms_per_item: int = 3,
+) -> "Dataset":
     """
-    Loads FLN + exercises, applies position balancing, returns a Dataset
-    with a single 'text' column ready for SFTTrainer.
+    Loads FLN + exercises, applies position balancing or permutation augmentation,
+    returns a Dataset with a single 'text' column ready for SFTTrainer.
+
+    use_permutation_augmentation=True is preferred over balance_strategy='oversample':
+    it generates genuine positional variety rather than duplicating examples.
+    When True, balance_strategy is still applied first then augmentation runs on top.
     """
     from datasets import Dataset, concatenate_datasets
     fln = load_fln_dataset("all")
@@ -94,13 +104,113 @@ def build_training_dataset(balance_strategy: str = "oversample") -> "Dataset":
     mcq_items = [x for x in fln if x["correct_letter"] in ["A", "B", "C", "D"]]
     non_mcq = [x for x in fln if x["correct_letter"] not in ["A", "B", "C", "D"]]
 
-    balanced = balance_by_position(mcq_items, strategy=balance_strategy)
+    if use_permutation_augmentation:
+        augmented = augment_mcq_with_permutations(mcq_items, n_perms_per_item=n_perms_per_item)
+    else:
+        augmented = balance_by_position(mcq_items, strategy=balance_strategy)
 
     return concatenate_datasets([
-        Dataset.from_list(balanced),
+        Dataset.from_list(augmented),
         Dataset.from_list(non_mcq),
         exercises.select_columns(["text"]),
     ])
+
+
+_LETTERS = ["A", "B", "C", "D"]
+_IDENTITY_PERM = (0, 1, 2, 3)
+
+
+def _parse_options(user_turn: str) -> Optional[Dict[str, str]]:
+    """
+    Extracts {A: text, B: text, C: text, D: text} from a chat-formatted user turn.
+    Returns None if any option is missing.
+    """
+    options = {}
+    for letter in _LETTERS:
+        match = re.search(
+            rf'\({letter}\)\s*(.+?)(?=\s*\([ABCD]\)|\s*<end_of_turn>|$)',
+            user_turn,
+            re.DOTALL,
+        )
+        if match:
+            options[letter] = match.group(1).strip()
+    return options if len(options) == 4 else None
+
+
+def permute_mcq_item(item: Dict, perm: Tuple[int, ...]) -> Optional[Dict]:
+    """
+    Applies answer-option permutation to one MCQ item.
+    perm[i] = index of old option placed at new position i.
+    Returns None if the item text cannot be parsed.
+    """
+    text = item.get("text", "")
+    correct_letter = item.get("correct_letter", "")
+    if correct_letter not in _LETTERS:
+        return None
+
+    parts = text.split("<start_of_turn>model\n", 1)
+    if len(parts) != 2:
+        return None
+    user_turn, model_turn = parts
+
+    options = _parse_options(user_turn)
+    if options is None:
+        return None
+
+    old_options = [options[l] for l in _LETTERS]
+    new_options = {_LETTERS[i]: old_options[perm[i]] for i in range(4)}
+
+    # Which new position contains the originally-correct option?
+    correct_idx = _LETTERS.index(correct_letter)
+    new_correct_idx = list(perm).index(correct_idx)
+    new_correct_letter = _LETTERS[new_correct_idx]
+
+    # Rebuild options block inside user turn
+    new_opts_block = "\n".join(f"({l}) {new_options[l]}" for l in _LETTERS)
+    new_user_turn = re.sub(
+        r"\(A\).*?(?=\s*<end_of_turn>)",
+        new_opts_block + "\n",
+        user_turn,
+        flags=re.DOTALL,
+    )
+
+    # Replace the correct letter reference in the model turn (first occurrence only)
+    new_model_turn = re.sub(
+        rf"\b{re.escape(correct_letter)}\b",
+        new_correct_letter,
+        model_turn,
+        count=1,
+    )
+
+    new_item = dict(item)
+    new_item["text"] = new_user_turn + "<start_of_turn>model\n" + new_model_turn
+    new_item["correct_letter"] = new_correct_letter
+    return new_item
+
+
+def augment_mcq_with_permutations(
+    mcq_items: List[Dict],
+    n_perms_per_item: int = 3,
+    seed: int = 42,
+) -> List[Dict]:
+    """
+    For each MCQ item, generates up to n_perms_per_item additional permuted versions.
+    Original items are always included. Items that cannot be parsed are included unchanged.
+    More principled than oversampling: generates genuine positional variety without repeats.
+    """
+    rng = random.Random(seed)
+    non_identity = [p for p in _permutations(range(4)) if p != _IDENTITY_PERM]
+
+    result = []
+    for item in mcq_items:
+        result.append(item)
+        if item.get("correct_letter") not in _LETTERS:
+            continue
+        for perm in rng.sample(non_identity, min(n_perms_per_item, len(non_identity))):
+            augmented = permute_mcq_item(item, perm)
+            if augmented is not None:
+                result.append(augmented)
+    return result
 
 
 def build_grpo_prompts(fln_dataset: "Dataset", n: int = 300) -> "Dataset":
