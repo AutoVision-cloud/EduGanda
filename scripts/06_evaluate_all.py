@@ -68,3 +68,18 @@ for name, r in all_results.items():
     print(f"{name:<30} {acc:>5.1f}% [{lo:>4.1f}%–{hi:>4.1f}%] {spread:>6.1f}pp  {sig}")
 
 print("\nSaved results/full_results.json")
+
+# Per-subdomain and per-age-group breakdown for the best model
+best_name = max(all_results, key=lambda n: all_results[n]["accuracy"])
+best = all_results[best_name]
+print(f"\n--- Breakdown for best model: {best_name} ---")
+
+print("\nPer-subdomain accuracy:")
+for sub, s in sorted(best.get("subdomain_stats", {}).items()):
+    if s["total"] > 0:
+        print(f"  {sub:<30} {s['correct']/s['total']:.1%} ({s['total']} items)")
+
+print("\nPer-age-group accuracy:")
+for age, s in sorted(best.get("age_group_stats", {}).items()):
+    if s["total"] > 0:
+        print(f"  {age:<20} {s['correct']/s['total']:.1%} ({s['total']} items)")

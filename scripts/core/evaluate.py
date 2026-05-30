@@ -24,6 +24,8 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
     predictions, labels_list, confidences = [], [], []
     position_stats = {pos: {"total": 0, "correct": 0} for pos in ANSWER_TOKENS}
     category_stats = {}
+    subdomain_stats = {}
+    age_group_stats = {}
 
     answer_token_ids = [tokenizer.convert_tokens_to_ids(t) for t in ANSWER_TOKENS]
 
@@ -65,6 +67,14 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
         if predicted == gold:
             category_stats[cat]["correct"] += 1
 
+        for field, store in [("subdomain", subdomain_stats), ("age_group", age_group_stats)]:
+            key = item.get(field, "unknown") or "unknown"
+            if key not in store:
+                store[key] = {"total": 0, "correct": 0}
+            store[key]["total"] += 1
+            if predicted == gold:
+                store[key]["correct"] += 1
+
     total = len(samples)
     accs = [s["correct"] / s["total"] for s in position_stats.values() if s["total"] > 0]
     spread = (max(accs) - min(accs)) * 100 if accs else 0.0
@@ -85,6 +95,8 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
         "confidences": confidences,
         "position_stats": position_stats,
         "category_stats": category_stats,
+        "subdomain_stats": subdomain_stats,
+        "age_group_stats": age_group_stats,
         "spread": spread,
         "prediction_distribution": pred_dist,
         "prediction_entropy": pred_entropy,
