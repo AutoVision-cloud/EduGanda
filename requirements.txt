@@ -8,3 +8,8 @@ bitsandbytes>=0.43.0
 mergekit-community
 huggingface_hub>=0.22.0
 pyyaml>=6.0
+wandb>=0.17.0
+scikit-learn>=1.4.0
+scipy>=1.12.0
+matplotlib>=3.8.0
+llama-cpp-python>=0.2.0
