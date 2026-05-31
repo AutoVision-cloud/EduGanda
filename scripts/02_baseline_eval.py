@@ -1,13 +1,13 @@
 """
-Hour 2: Baseline Evaluation
-Evaluates ganda-gemma-1b (CPT only) and EduGanda-Gemma-3-1B (reference).
+Baseline Evaluation — run BEFORE any training.
 
-Three evaluation dimensions:
-  1. MCQ accuracy (LLPK benchmark, 299 items)
-     - Primary: log-probability option scoring (principled, avoids parser sensitivity)
-     - Secondary: generation scoring (matches published methodology)
-  2. Open-ended generation quality (reward model scores on lesson plan prompts)
-  3. Repetition rate (with vs without penalty — validates the blog's finding)
+Three dimensions per model:
+  1. MCQ accuracy (log-prob scoring — frozen eval protocol)
+  2. MCQ accuracy (generation — for comparison with published results)
+  3. Open-ended generation quality (reward model scores + repetition rate)
+
+Note: Published 66% PCK for EduGanda was not reproducible under this protocol.
+See README → Evaluation Protocol for full explanation.
 """
 
 import json
@@ -16,12 +16,18 @@ import statistics
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
-from scripts.core.evaluate import evaluate_on_benchmark, evaluate_on_benchmark_generation, bootstrap_ci, check_tokenization
+from scripts.core.evaluate import (
+    evaluate_on_benchmark,
+    evaluate_on_benchmark_generation,
+    bootstrap_ci,
+    check_tokenization,
+)
 
 os.makedirs("results", exist_ok=True)
 
+
 # ---------------------------------------------------------------------------
-# Helper: open-ended generation evaluation
+# Generation quality helpers
 # ---------------------------------------------------------------------------
 
 def _score_texts(texts, reward_model, reward_tokenizer):
@@ -32,39 +38,29 @@ def _score_texts(texts, reward_model, reward_tokenizer):
         ).to(reward_model.device)
         with torch.no_grad():
             logits = reward_model(**inputs).logits
-        if logits.shape[-1] == 2:
-            score = torch.softmax(logits, dim=-1)[0, 1].item()
-        else:
-            score = logits[0, 0].item()
+        score = (torch.softmax(logits, dim=-1)[0, 1] if logits.shape[-1] == 2
+                 else logits[0, 0]).item()
         scores.append(score)
     return scores
 
 
 def _repetition_rate(text: str, ngram: int = 5) -> float:
-    """Fraction of n-grams that are repeated. 0=no repetition, 1=fully repetitive."""
     tokens = text.split()
     if len(tokens) < ngram:
         return 0.0
-    grams = [tuple(tokens[i:i+ngram]) for i in range(len(tokens) - ngram + 1)]
+    grams = [tuple(tokens[i:i + ngram]) for i in range(len(tokens) - ngram + 1)]
     return 1.0 - len(set(grams)) / len(grams)
 
 
-def evaluate_open_generation(model, tokenizer, reward_model, reward_tokenizer,
-                              generation_prompts, label=""):
-    """
-    Generates open-ended responses and evaluates with the reward model.
-    Tests both with and without repetition_penalty to document the failure mode.
-    """
+def _eval_generation_quality(model, tokenizer, reward_model, reward_tokenizer,
+                              prompts, label):
+    """Reward model scores + repetition rate, with and without repetition_penalty."""
     model.eval()
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    results = {"label": label, "n_prompts": len(generation_prompts)}
+    results = {"label": label, "n_prompts": len(prompts)}
 
     for penalty, key in [(1.2, "with_penalty"), (1.0, "no_penalty")]:
         outputs, rep_rates, full_texts = [], [], []
-        for prompt_text in generation_prompts:
-            # apply_chat_template adds BOS + proper special tokens
+        for prompt_text in prompts:
             formatted = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt_text}],
                 tokenize=False, add_generation_prompt=True,
@@ -72,19 +68,13 @@ def evaluate_open_generation(model, tokenizer, reward_model, reward_tokenizer,
             ids = tokenizer(formatted, return_tensors="pt",
                             add_special_tokens=False).input_ids.to(model.device)
             with torch.no_grad():
-                out = model.generate(
-                    ids,
-                    max_new_tokens=150,
-                    do_sample=False,
-                    repetition_penalty=penalty,
-                    pad_token_id=tokenizer.eos_token_id,
-                )
-            response = tokenizer.decode(
-                out[0][ids.shape[1]:], skip_special_tokens=True
-            ).strip()
+                out = model.generate(ids, max_new_tokens=150, do_sample=False,
+                                     repetition_penalty=penalty,
+                                     pad_token_id=tokenizer.eos_token_id)
+            response = tokenizer.decode(out[0][ids.shape[1]:],
+                                        skip_special_tokens=True).strip()
             outputs.append(response)
             rep_rates.append(_repetition_rate(response))
-            # Reward model expects full conversation context
             full_texts.append(formatted + response)
 
         scores = _score_texts(full_texts, reward_model, reward_tokenizer)
@@ -94,171 +84,126 @@ def evaluate_open_generation(model, tokenizer, reward_model, reward_tokenizer,
             "mean_repetition_rate": round(statistics.mean(rep_rates), 4),
             "sample_outputs": outputs[:3],
         }
-        print(f"  [{label} | rep_penalty={penalty}]  "
-              f"reward={results[key]['mean_reward']:.3f}  "
+        print(f"  [{label} pen={penalty}]  reward={results[key]['mean_reward']:.3f}  "
               f"repetition={results[key]['mean_repetition_rate']:.3f}")
+    return results
 
+
+def _load_model(model_id):
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, torch_dtype=torch.bfloat16,
+        device_map="auto", attn_implementation="sdpa",
+    )
+    model.eval()
+    tok = AutoTokenizer.from_pretrained(model_id)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return model, tok
+
+
+def eval_model(model_id, label, benchmark, reward_model, reward_tokenizer, gen_prompts):
+    """Load, evaluate on all three dimensions, unload. Returns results dict."""
+    print(f"\n{'='*60}\n{label}\n{'='*60}")
+    model, tok = _load_model(model_id)
+
+    print("\n--- MCQ Accuracy ---")
+    results = evaluate_on_benchmark(model, tok, benchmark, label=f"{label} (log-prob)")
+    results["ci_lower"], results["ci_upper"] = bootstrap_ci(
+        results["predictions"], results["labels"])[1:]
+    gen = evaluate_on_benchmark_generation(model, tok, benchmark,
+                                           label=f"{label} (generation)")
+    results["generation_accuracy"] = gen["accuracy"]
+
+    print("\n--- Open-ended Generation ---")
+    results["generation_eval"] = _eval_generation_quality(
+        model, tok, reward_model, reward_tokenizer, gen_prompts, label=label)
+
+    del model
+    torch.cuda.empty_cache()
     return results
 
 
 # ---------------------------------------------------------------------------
-# Load shared resources
+# Setup
 # ---------------------------------------------------------------------------
 
 benchmark = load_dataset("CraneAILabs/pedagogy-luganda-replaced")
 
-# Generation prompts: sampled from non-MCQ FLN items (content generation format)
-# These ask for lesson plans, exercises, and teaching activities in Luganda.
-fln = load_dataset("CraneAILabs/luganda-fln-training-data", "fln_content")["train"]
-GEN_PROMPTS = []
-for row in fln:
+# Generation prompts from FLN content subset (non-MCQ items)
+fln_content = load_dataset("CraneAILabs/luganda-fln-training-data", "fln_content")["train"]
+gen_prompts = []
+for row in fln_content:
     text = row.get("text", "")
     if "<start_of_turn>user\n" in text and "<end_of_turn>" in text:
         user_part = text.split("<start_of_turn>user\n")[1].split("<end_of_turn>")[0].strip()
-        GEN_PROMPTS.append(user_part)
-    if len(GEN_PROMPTS) >= 20:
+        gen_prompts.append(user_part)
+    if len(gen_prompts) >= 20:
         break
+if len(gen_prompts) < 5:
+    gen_prompts = [
+        "Nkola ekikolwa eky'okusomesa abayizi ba P1 okumanya ennyingo.",
+        "Nkola olukalala lw'ebikolwa okusomesa abayizi ba P2 okumanya okuwandiika.",
+        "Nkola ekigendererwa eky'okusomesa abayizi ba P3 mu somo ly'endimi.",
+        "Nkola ekikolwa eky'okusomesa abayizi okumanya ennyingo z'okusoma.",
+        "Nkola olukalala lw'ebibuuzo okusomesa abayizi ba P1 okumanya ensimbi.",
+    ]
+print(f"Generation prompts: {len(gen_prompts)} items\n")
 
-# Fallback prompts if FLN content subset is too small
-FALLBACK_PROMPTS = [
-    "Nkola ekikolwa eky'okusomesa abayizi ba P1 okumanya ennyingo. Nkole etunula okukyusa amaanyi g'okusoma.",
-    "Nkola olukalala lw'ebikolwa okusomesa abayizi ba P2 okumanya okuwandiika ebyayigirwa.",
-    "Nkola ekigendererwa eky'okusomesa abayizi ba P3 mu somo ly'endimi okuhulikira n'okuddamu.",
-    "Nkola ekikolwa eky'okusomesa abayizi okumanya ennyingo z'okusoma mu Luganda.",
-    "Nkola olukalala lw'ebibuuzo okusomesa abayizi ba P1 okumanya ensimbi.",
-]
-if len(GEN_PROMPTS) < 5:
-    GEN_PROMPTS = FALLBACK_PROMPTS
-
-print(f"Using {len(GEN_PROMPTS)} generation prompts from FLN content subset.")
-
-# Tokenization verification
-print("\n" + "=" * 60)
-print("TOKENIZATION VERIFICATION")
-print("=" * 60)
-_tok_check = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
-check_tokenization(_tok_check)
+# Tokenization verification (run once, uses base model tokenizer)
+print("=" * 60 + "\nTOKENIZATION VERIFICATION\n" + "=" * 60)
+_tok = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
+check_tokenization(_tok)
 for letter in ["A", "B", "C", "D"]:
-    n = len(_tok_check.encode(letter, add_special_tokens=False))
+    n = len(_tok.encode(letter, add_special_tokens=False))
     print(f"  '{letter}' → {n} token(s)  {'✓' if n == 1 else f'WARNING: {n} tokens'}")
-del _tok_check
-print()
+del _tok
 
-# Load reward model (shared across both evals)
-print("Loading reward model...")
+# Reward model (shared, loaded once)
+print("\nLoading reward model...")
 reward_model = AutoModelForSequenceClassification.from_pretrained(
     "CraneAILabs/luganda-reward-model",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    trust_remote_code=True,
+    torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
 )
 reward_tokenizer = AutoTokenizer.from_pretrained("CraneAILabs/luganda-reward-model")
-print(f"  Reward model: {reward_model.config.num_labels} labels, "
+print(f"  {reward_model.config.num_labels} label(s), "
       f"id2label={getattr(reward_model.config, 'id2label', 'not set')}\n")
 
 # ---------------------------------------------------------------------------
-# 1. ganda-gemma-1b (CPT only — no education SFT)
+# Evaluate both models
 # ---------------------------------------------------------------------------
-print("=" * 60)
-print("BASELINE: ganda-gemma-1b")
-print("=" * 60)
-model_base = AutoModelForCausalLM.from_pretrained(
-    "CraneAILabs/ganda-gemma-1b",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    attn_implementation="sdpa",
+
+base_results = eval_model(
+    "CraneAILabs/ganda-gemma-1b", "BASELINE: ganda-gemma-1b",
+    benchmark, reward_model, reward_tokenizer, gen_prompts,
 )
-model_base.eval()
-tok_base = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
-if tok_base.pad_token is None:
-    tok_base.pad_token = tok_base.eos_token
-
-print("\n--- MCQ Accuracy ---")
-base_results = evaluate_on_benchmark(
-    model_base, tok_base, benchmark, label="ganda-gemma-1b (log-prob)")
-base_results["ci_lower"], base_results["ci_upper"] = bootstrap_ci(
-    base_results["predictions"], base_results["labels"])[1:]
-base_gen = evaluate_on_benchmark_generation(
-    model_base, tok_base, benchmark, label="ganda-gemma-1b (generation)")
-base_results["generation_accuracy"] = base_gen["accuracy"]
-
-print("\n--- Open-ended Generation ---")
-base_gen_eval = evaluate_open_generation(
-    model_base, tok_base, reward_model, reward_tokenizer, GEN_PROMPTS,
-    label="ganda-gemma-1b")
-base_results["generation_eval"] = base_gen_eval
-
-del model_base
-torch.cuda.empty_cache()
-
-# ---------------------------------------------------------------------------
-# 2. EduGanda-Gemma-3-1B (reference — target to match/beat)
-# ---------------------------------------------------------------------------
-print("\n" + "=" * 60)
-print("REFERENCE: EduGanda-Gemma-3-1B")
-print("=" * 60)
-model_ref = AutoModelForCausalLM.from_pretrained(
-    "CraneAILabs/EduGanda-Gemma-3-1B",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    attn_implementation="sdpa",
+ref_results = eval_model(
+    "CraneAILabs/EduGanda-Gemma-3-1B", "REFERENCE: EduGanda-Gemma-3-1B",
+    benchmark, reward_model, reward_tokenizer, gen_prompts,
 )
-model_ref.eval()
-tok_ref = AutoTokenizer.from_pretrained("CraneAILabs/EduGanda-Gemma-3-1B")
-if tok_ref.pad_token is None:
-    tok_ref.pad_token = tok_ref.eos_token
-
-print("\n--- MCQ Accuracy ---")
-ref_results = evaluate_on_benchmark(
-    model_ref, tok_ref, benchmark, label="EduGanda (log-prob)")
-ref_results["ci_lower"], ref_results["ci_upper"] = bootstrap_ci(
-    ref_results["predictions"], ref_results["labels"])[1:]
-ref_gen = evaluate_on_benchmark_generation(
-    model_ref, tok_ref, benchmark, label="EduGanda (generation)")
-ref_results["generation_accuracy"] = ref_gen["accuracy"]
-
-print("\n--- Open-ended Generation ---")
-ref_gen_eval = evaluate_open_generation(
-    model_ref, tok_ref, reward_model, reward_tokenizer, GEN_PROMPTS,
-    label="EduGanda")
-ref_results["generation_eval"] = ref_gen_eval
-
-del model_ref
-torch.cuda.empty_cache()
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-print("\n" + "=" * 70)
-print("BASELINE SUMMARY")
-print("=" * 70)
-for name, r in [("ganda-gemma-1b (base)", base_results),
-                ("EduGanda reference", ref_results)]:
-    acc_lp = r["accuracy"] * 100
+print("\n" + "=" * 70 + "\nBASELINE SUMMARY\n" + "=" * 70)
+for name, r in [("ganda-gemma-1b", base_results), ("EduGanda reference", ref_results)]:
     lo, hi = r.get("ci_lower", 0) * 100, r.get("ci_upper", 0) * 100
-    acc_gen = r.get("generation_accuracy", 0) * 100
-    spread = r["spread"]
     dist = r.get("prediction_distribution", {})
-    entropy = r.get("prediction_entropy", 0)
     ge = r.get("generation_eval", {})
-
     print(f"\n{name}")
-    print(f"  MCQ accuracy (log-prob):   {acc_lp:.1f}% [{lo:.1f}%–{hi:.1f}%]")
-    print(f"  MCQ accuracy (generation): {acc_gen:.1f}%  ← published method")
-    print(f"  Position bias spread:      {spread:.1f}pp")
+    print(f"  MCQ log-prob:   {r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
+          f"spread={r['spread']:.1f}pp")
+    print(f"  MCQ generation: {r.get('generation_accuracy',0)*100:.1f}%")
     print(f"  Pred dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
-          f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}  entropy={entropy:.3f}")
-
+          f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}  "
+          f"entropy={r.get('prediction_entropy',0):.3f}")
     if ge:
-        wp = ge.get("with_penalty", {})
-        np_ = ge.get("no_penalty", {})
-        print(f"  Reward score (penalty=1.2): {wp.get('mean_reward', 0):.3f} ± "
-              f"{wp.get('std_reward', 0):.3f}")
-        print(f"  Reward score (no penalty):  {np_.get('mean_reward', 0):.3f}  "
-              f"repetition={np_.get('mean_repetition_rate', 0):.3f}")
+        wp, np_ = ge.get("with_penalty", {}), ge.get("no_penalty", {})
+        print(f"  Reward (pen=1.2): {wp.get('mean_reward',0):.3f}±{wp.get('std_reward',0):.3f}  "
+              f"rep={wp.get('mean_repetition_rate',0):.3f}")
+        print(f"  Reward (no pen):  {np_.get('mean_reward',0):.3f}  "
+              f"rep={np_.get('mean_repetition_rate',0):.3f}")
 
 with open("results/baseline_results.json", "w") as f:
     json.dump({"base": base_results, "reference": ref_results}, f,
               indent=2, default=str)
-
 print("\nSaved results/baseline_results.json")
