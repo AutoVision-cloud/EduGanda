@@ -33,16 +33,25 @@ echo "source $VENV_DIR/bin/activate" >> ~/.bashrc
 # Install uv for fast package management
 if ! command -v uv &>/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$PATH"
+  export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
+
+# Installer for packages — uv if available, pip fallback
+_install() {
+  if command -v uv &>/dev/null; then
+    uv pip install "$@"
+  else
+    pip install -q "$@"
+  fi
+}
 
 # Install PyTorch for CUDA 12.4 (compatible with RunPod driver 12040)
 echo "Installing PyTorch (cu124)..."
-uv pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+_install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining deps
 echo "Installing other dependencies..."
-uv pip install transformers==4.50.3 trl==0.12.0 peft==0.14.0 \
+_install transformers==4.50.3 trl==0.12.0 peft==0.14.0 \
     accelerate datasets bitsandbytes scikit-learn scipy \
     matplotlib wandb huggingface_hub mergekit pyyaml llama-cpp-python
 
