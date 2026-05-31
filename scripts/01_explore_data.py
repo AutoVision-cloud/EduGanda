@@ -6,6 +6,7 @@ Run on your A100 instance after: pip install -r requirements.txt && huggingface-
 from datasets import load_dataset
 import collections
 import json
+import os
 
 # --- Load datasets ---
 fln = load_dataset("CraneAILabs/luganda-fln-training-data", "all")
@@ -76,6 +77,7 @@ summary = {
     "position_distribution": dict(position_dist),
     "contamination_overlap": len(overlap),
 }
+os.makedirs("results", exist_ok=True)
 with open("results/exploration_summary.json", "w") as f:
     json.dump(summary, f, indent=2)
 print("\nSaved exploration_summary.json")
