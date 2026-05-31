@@ -44,7 +44,7 @@ print("BASELINE: ganda-gemma-1b")
 print("=" * 60)
 model_base = AutoModelForCausalLM.from_pretrained(
     "CraneAILabs/ganda-gemma-1b",
-    dtype=torch.bfloat16,
+    torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 model_base.eval()
@@ -64,7 +64,7 @@ print("REFERENCE: EduGanda-Gemma-3-1B")
 print("=" * 60)
 model_ref = AutoModelForCausalLM.from_pretrained(
     "CraneAILabs/EduGanda-Gemma-3-1B",
-    dtype=torch.bfloat16,
+    torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 model_ref.eval()
