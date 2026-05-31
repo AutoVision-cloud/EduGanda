@@ -140,7 +140,7 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+    tokenizer.padding_side = "right"
 
     PROMPT_SUFFIX = "<end_of_turn>\n<start_of_turn>model\n"
     choice_token_ids = _get_choice_token_ids(tokenizer, PROMPT_SUFFIX)
@@ -169,7 +169,8 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
         batch = samples[batch_start: batch_start + batch_size]
         prompts = [build_prompt(item) for item in batch]
 
-        # Tokenize batch with left-padding — all sequences end at position -1
+        # Right-padding: real tokens are at positions 0..seq_len-1, padding follows.
+        # Track last real token position per sequence via attention_mask.
         inputs = tokenizer(
             prompts, return_tensors="pt", padding=True,
             add_special_tokens=False
@@ -177,8 +178,11 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
 
         with torch.no_grad():
             out = model(**inputs)
-            # Last token position for each item (right-aligned due to left-padding)
-            last_logits = out.logits[:, -1, :]  # (batch, vocab)
+            # Last non-padded position for each sequence
+            last_positions = inputs.attention_mask.sum(dim=1) - 1  # (batch,)
+            last_logits = out.logits[
+                torch.arange(len(batch), device=model.device), last_positions
+            ]  # (batch, vocab)
 
         log_probs_batch = torch.log_softmax(last_logits, dim=-1)  # (batch, vocab)
 
