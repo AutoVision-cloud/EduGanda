@@ -5,7 +5,7 @@ peft>=0.10.0
 datasets>=2.18.0
 accelerate>=0.28.0
 bitsandbytes>=0.43.0
-mergekit-community
+mergekit
 huggingface_hub>=0.22.0
 pyyaml>=6.0
 wandb>=0.17.0
