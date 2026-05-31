@@ -6,6 +6,9 @@ __pycache__/
 dist/
 build/
 .env
+*.pub
+*.pem
+*.key
 *.gguf
 *.bin
 wandb/
