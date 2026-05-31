@@ -97,19 +97,49 @@ trainer = SFTTrainer(
 print(f"Training on {N_EXAMPLES} examples for {N_EPOCHS} epochs...\n")
 trainer.train()
 
-print("\nMerging LoRA and evaluating on training set...")
-merged = trainer.model.merge_and_unload()
-merged.eval()
+print("\nEvaluating on training set (WITHOUT merging — avoids 4-bit merge errors)...")
+# Evaluate the adapter model directly, before merging
+# Use generation from the exact training prompt prefix — checks if model memorised output
+adapter_model = trainer.model
+adapter_model.eval()
 
-result = evaluate_on_benchmark(merged, tokenizer, tiny_bench, label="overfit-check")
+correct_gen = 0
+print(f"\n{'#':>3}  gold  raw_output (first 40 chars)")
+print("-" * 60)
+for idx, item in enumerate(mcq_items):
+    text = item["text"]
+    if "<start_of_turn>model\n" not in text:
+        continue
+    # Use the exact training prefix up to "<start_of_turn>model\n"
+    prompt = text.split("<start_of_turn>model\n")[0] + "<start_of_turn>model\n"
+    gold = item["correct_letter"]
+
+    ids = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(adapter_model.device)
+    with torch.no_grad():
+        out = adapter_model.generate(
+            ids, max_new_tokens=20, do_sample=False,
+            repetition_penalty=1.2, pad_token_id=tokenizer.eos_token_id,
+        )
+    raw = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+
+    # Check if generation starts with "Okuddamu: X" or just the letter
+    from scripts.core.data import extract_first_letter
+    predicted = extract_first_letter(raw)
+    match = "✓" if predicted == gold else "✗"
+    if predicted == gold:
+        correct_gen += 1
+    print(f"[{idx:2d}]  {gold}    {match}  {repr(raw[:40])}")
+
+n = len(mcq_items)
 print(f"\n=== OVERFIT SANITY RESULT ===")
-print(f"Train accuracy: {result['accuracy']:.1%} ({int(result['accuracy']*len(tiny_bench_items))}/{len(tiny_bench_items)} correct)")
-print(f"Prediction dist: {result['prediction_distribution']}")
-print(f"Spread: {result['spread']:.1f}pp")
+print(f"Generation accuracy on training set: {correct_gen}/{n} = {correct_gen/n:.1%}")
 print()
-if result["accuracy"] >= 0.7:
-    print("✓ PASS: model can overfit training data — pipeline is working.")
-elif result["accuracy"] >= 0.4:
-    print("⚠ MARGINAL: partial overfit — check loss curve and LoRA rank.")
+if correct_gen / n >= 0.7:
+    print("✓ PASS: model memorised training answers — pipeline is working.")
+    print("  → Your log-prob evaluator measures the wrong token. Fix eval, not training.")
+elif correct_gen / n >= 0.4:
+    print("⚠ MARGINAL: partial memorisation.")
+    print("  → Check loss mask and training format.")
 else:
-    print("✗ FAIL: model cannot overfit 20 examples — check loss mask, LoRA targets, tokenizer.")
+    print("✗ FAIL: model did not memorise training answers despite low loss.")
+    print("  → Check: loss mask (is model turn masked?), LoRA targets, data format.")
