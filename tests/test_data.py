@@ -49,12 +49,19 @@ def test_extract_first_letter_finds_abcd():
 
 
 def test_extract_first_letter_okuddamu_format():
-    # SFT model output format
     assert extract_first_letter("Okuddamu: C\n\nOption C focuses on...") == "C"
     assert extract_first_letter("Okuddamu: A") == "A"
     assert extract_first_letter("okuddamu: d") == "D"
     # Okuddamu takes priority over later letters
     assert extract_first_letter("Okuddamu: B\n\nOption A is wrong") == "B"
+
+
+def test_extract_first_letter_parenthesis_format():
+    # Base model output style: "Ekibuuzo kya (B)"
+    assert extract_first_letter("Ekibuuzo kya (B).") == "B"
+    assert extract_first_letter("Ensonga entuufu eri (A). Okusinziira...") == "A"
+    # Okuddamu takes priority over parenthesis
+    assert extract_first_letter("Okuddamu: C\n(A) is wrong") == "C"
 
 
 # --- Permutation augmentation tests ---

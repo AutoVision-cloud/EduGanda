@@ -127,13 +127,15 @@ def _get_choice_token_ids(tokenizer, prompt_suffix: str) -> dict:
 
 
 def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
-                          batch_size: int = 8) -> dict:
+                          batch_size: int = 8, forced_format: bool = False) -> dict:
     """
-    Primary metric: generation-based scoring using training-format prompts.
-    Batched with left-padding for ~4x speedup over sequential generation.
+    Generation-based MCQ scoring. Batched with left-padding.
 
-    Uses training prompt format (question + options, no instruction prefix).
-    Extracts answer from "Okuddamu: X" or bare letter responses.
+    forced_format=False (default): free generation — measures deployment behaviour.
+      Prompt ends at <start_of_turn>model\n, model generates freely.
+    forced_format=True: forced format — appends "Okuddamu: " to the prompt,
+      model only needs to generate the answer letter. More reliable for MCQ
+      accuracy when the model has variable output style.
     """
     import torch
     from scripts.core.data import extract_first_letter
@@ -159,10 +161,13 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
             f"(C) {item['luganda_answer_c']}\n"
             f"(D) {item['luganda_answer_d']}"
         )
-        return tokenizer.apply_chat_template(
+        prompt = tokenizer.apply_chat_template(
             [{"role": "user", "content": content}],
             tokenize=False, add_generation_prompt=True,
         )
+        if forced_format:
+            prompt += "Okuddamu: "
+        return prompt
 
     for batch_start in range(0, len(samples), batch_size):
         batch = samples[batch_start: batch_start + batch_size]

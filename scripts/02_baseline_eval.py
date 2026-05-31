@@ -29,9 +29,18 @@ def eval_model(model_id, label, benchmark):
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    results = evaluate_on_benchmark(model, tok, benchmark, label=label)
+    print("\n[free generation — deployment behaviour]")
+    results = evaluate_on_benchmark(model, tok, benchmark,
+                                    label=label, forced_format=False)
     results["ci_lower"], results["ci_upper"] = bootstrap_ci(
         results["predictions"], results["labels"])[1:]
+
+    print("\n[forced format: 'Okuddamu: ' primer — MCQ accuracy]")
+    forced = evaluate_on_benchmark(model, tok, benchmark,
+                                   label=f"{label} (forced)", forced_format=True)
+    forced["ci_lower"], forced["ci_upper"] = bootstrap_ci(
+        forced["predictions"], forced["labels"])[1:]
+    results["forced"] = forced
 
     del model
     torch.cuda.empty_cache()
@@ -56,11 +65,19 @@ print("\n" + "=" * 60 + "\nBASELINE SUMMARY\n" + "=" * 60)
 for name, r in [("ganda-gemma-1b", base_results), ("EduGanda reference", ref_results)]:
     lo, hi = r.get("ci_lower", 0) * 100, r.get("ci_upper", 0) * 100
     dist = r.get("prediction_distribution", {})
+    f = r.get("forced", {})
     print(f"\n{name}")
-    print(f"  Accuracy: {r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
+    print(f"  Free gen:   acc={r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
           f"spread={r['spread']:.1f}pp  entropy={r.get('prediction_entropy',0):.3f}")
-    print(f"  Pred dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
+    print(f"    dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
           f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}")
+    if f:
+        fd = f.get("prediction_distribution", {})
+        flo, fhi = f.get("ci_lower", 0)*100, f.get("ci_upper", 0)*100
+        print(f"  Forced fmt: acc={f['accuracy']*100:.1f}% [{flo:.1f}%–{fhi:.1f}%]  "
+              f"spread={f['spread']:.1f}pp  entropy={f.get('prediction_entropy',0):.3f}")
+        print(f"    dist: A={fd.get('A',0):.1%} B={fd.get('B',0):.1%} "
+              f"C={fd.get('C',0):.1%} D={fd.get('D',0):.1%}")
 
 with open("results/baseline_results.json", "w") as f:
     json.dump({"base": base_results, "reference": ref_results}, f,

@@ -48,15 +48,21 @@ def balance_by_position(
 
 def extract_first_letter(text: str) -> Optional[str]:
     """
-    Extract the answer letter from a model response.
-    Handles both SFT-style 'Okuddamu: X' outputs and bare letter responses.
+    Extract the answer letter from a model response. Tries patterns in order:
+    1. "Okuddamu: X"  — SFT model output
+    2. "(X)"          — option reference e.g. "Ekibuuzo kya (B)"
+    3. bare X         — fallback for base models
     """
     import re
-    # SFT models output "Okuddamu: X" (Luganda for "Answer: X") — check first
+    # 1. Okuddamu: X
     m = re.search(r'[Oo]kuddamu\s*:\s*([ABCD])', text)
     if m:
         return m.group(1).upper()
-    # Fall back to first standalone A/B/C/D (handles base model outputs)
+    # 2. (X) — letter inside parentheses
+    m = re.search(r'\(([ABCD])\)', text.upper())
+    if m:
+        return m.group(1)
+    # 3. Standalone letter
     m = re.search(r'\b([ABCD])\b', text.upper())
     return m.group(1) if m else None
 
