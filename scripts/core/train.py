@@ -22,7 +22,7 @@ def train_sft(
     """Runs SFT with QLoRA, merges adapter, saves full model to output_dir. Returns output_dir."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from trl import SFTTrainer, SFTConfig
+    from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
     from peft import LoraConfig
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -34,6 +34,7 @@ def train_sft(
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
     peft_config = LoraConfig(
         r=lora_rank,
@@ -41,6 +42,11 @@ def train_sft(
         target_modules="all-linear",
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
+    )
+
+    # Assistant-only loss: mask user/prompt tokens, train only on model completions
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template="<start_of_turn>model\n", tokenizer=tokenizer
     )
 
     trainer = SFTTrainer(
@@ -57,10 +63,11 @@ def train_sft(
             save_strategy="epoch",
             max_seq_length=max_seq_length,
             report_to=report_to,
+            dataset_text_field="text",
         ),
         train_dataset=train_dataset,
         peft_config=peft_config,
-        dataset_text_field="text",
+        data_collator=collator,
         callbacks=callbacks or [],
     )
 

@@ -1,17 +1,17 @@
 """
 Sanity check 2: Can the model overfit 20 training examples?
-If it can't reach high train accuracy after 20-50 epochs on 20 items,
-the training pipeline (LoRA targets, loss mask, tokenizer) is broken.
+Uses DataCollatorForCompletionOnlyLM for true assistant-only loss —
+masking the user/prompt tokens so loss only comes from model completion.
+Minimum bar: ≥80% train accuracy on 20 examples.
 
 Usage: python scripts/sanity_overfit.py
-Expected: train accuracy should climb toward 80-100% by epoch 10-20.
 """
 import torch
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from peft import LoraConfig
-from scripts.core.evaluate import evaluate_on_benchmark, _get_choice_token_ids, ANSWER_TOKENS
+from scripts.core.evaluate import ANSWER_TOKENS
 
 N_EXAMPLES = 20
 N_EPOCHS = 30
@@ -69,10 +69,18 @@ model = AutoModelForCausalLM.from_pretrained(
 tokenizer = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
 
 peft_config = LoraConfig(
-    r=16, lora_alpha=32, target_modules="all-linear",
+    r=32, lora_alpha=64, target_modules="all-linear",
     lora_dropout=0.05, task_type="CAUSAL_LM",
+)
+
+# Assistant-only loss: mask everything before "<start_of_turn>model\n"
+# Loss only flows through the model's completion tokens, not user prompt
+response_template = "<start_of_turn>model\n"
+collator = DataCollatorForCompletionOnlyLM(
+    response_template=response_template, tokenizer=tokenizer
 )
 
 trainer = SFTTrainer(
@@ -82,16 +90,17 @@ trainer = SFTTrainer(
         num_train_epochs=N_EPOCHS,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=1,
-        learning_rate=2e-4,
+        learning_rate=5e-4,
         bf16=True,
         logging_steps=5,
         save_strategy="no",
         max_seq_length=512,
         report_to="none",
+        dataset_text_field="text",
     ),
     train_dataset=tiny_ds,
     peft_config=peft_config,
-    dataset_text_field="text",
+    data_collator=collator,
 )
 
 print(f"Training on {N_EXAMPLES} examples for {N_EPOCHS} epochs...\n")
@@ -114,13 +123,13 @@ for idx, item in enumerate(mcq_items):
     prompt = text.split("<start_of_turn>model\n")[0] + "<start_of_turn>model\n"
     gold = item["correct_letter"]
 
-    ids = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(adapter_model.device)
+    enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(adapter_model.device)
     with torch.no_grad():
         out = adapter_model.generate(
-            ids, max_new_tokens=20, do_sample=False,
+            **enc, max_new_tokens=20, do_sample=False,
             repetition_penalty=1.2, pad_token_id=tokenizer.eos_token_id,
         )
-    raw = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+    raw = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
     # Check if generation starts with "Okuddamu: X" or just the letter
     from scripts.core.data import extract_first_letter
