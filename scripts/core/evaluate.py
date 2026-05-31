@@ -175,12 +175,14 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
 
         enc = tokenizer(prompts, return_tensors="pt", padding=True,
                         add_special_tokens=False).to(model.device)
+        # enc contains both input_ids and attention_mask — both passed to generate
         prompt_len = enc.input_ids.shape[1]
+        gen_tokens = 5 if forced_format else 30  # forced: just need the letter
 
         with torch.no_grad():
             out = model.generate(
                 **enc,
-                max_new_tokens=30,
+                max_new_tokens=gen_tokens,
                 do_sample=False,
                 repetition_penalty=1.2,
                 pad_token_id=tokenizer.eos_token_id,
@@ -229,6 +231,7 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     total = len(samples)
     accs = [s["correct"] / s["total"] for s in position_stats.values() if s["total"] > 0]
     spread = (max(accs) - min(accs)) * 100 if accs else 0.0
+    invalid_rate = round(sum(1 for p in predictions if p == "") / total, 4)
 
     pred_dist = compute_prediction_distribution(predictions)
     pred_entropy = compute_prediction_entropy(predictions)
@@ -236,7 +239,7 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     if label:
         print(
             f"[{label}] accuracy={correct/total:.1%}  spread={spread:.1f}pp  "
-            f"pred_entropy={pred_entropy:.3f}"
+            f"invalid={invalid_rate:.1%}  pred_entropy={pred_entropy:.3f}"
         )
 
     return {
@@ -249,6 +252,7 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
         "subdomain_stats": subdomain_stats,
         "age_group_stats": age_group_stats,
         "spread": spread,
+        "invalid_parse_rate": invalid_rate,
         "prediction_distribution": pred_dist,
         "prediction_entropy": pred_entropy,
     }

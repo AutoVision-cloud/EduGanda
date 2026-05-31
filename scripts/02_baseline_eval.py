@@ -68,16 +68,18 @@ for name, r in [("ganda-gemma-1b", base_results), ("EduGanda reference", ref_res
     f = r.get("forced", {})
     print(f"\n{name}")
     print(f"  Free gen:   acc={r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
-          f"spread={r['spread']:.1f}pp  entropy={r.get('prediction_entropy',0):.3f}")
+          f"spread={r['spread']:.1f}pp  invalid={r.get('invalid_parse_rate',0):.1%}")
     print(f"    dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
-          f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}")
+          f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}  "
+          f"entropy={r.get('prediction_entropy',0):.3f}")
     if f:
         fd = f.get("prediction_distribution", {})
         flo, fhi = f.get("ci_lower", 0)*100, f.get("ci_upper", 0)*100
         print(f"  Forced fmt: acc={f['accuracy']*100:.1f}% [{flo:.1f}%–{fhi:.1f}%]  "
-              f"spread={f['spread']:.1f}pp  entropy={f.get('prediction_entropy',0):.3f}")
+              f"spread={f['spread']:.1f}pp  invalid={f.get('invalid_parse_rate',0):.1%}")
         print(f"    dist: A={fd.get('A',0):.1%} B={fd.get('B',0):.1%} "
-              f"C={fd.get('C',0):.1%} D={fd.get('D',0):.1%}")
+              f"C={fd.get('C',0):.1%} D={fd.get('D',0):.1%}  "
+              f"entropy={f.get('prediction_entropy',0):.3f}")
 
 with open("results/baseline_results.json", "w") as f:
     json.dump({"base": base_results, "reference": ref_results}, f,
