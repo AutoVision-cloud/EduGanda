@@ -19,9 +19,19 @@ else
   cd EduGanda
 fi
 
-# Install Python deps
+# Install Python deps (use uv if available for faster installs, fallback to pip)
 echo "Installing dependencies..."
-pip install -q -r requirements.txt
+if ! command -v uv &>/dev/null; then
+  echo "Installing uv for faster dependency resolution..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+if command -v uv &>/dev/null; then
+  uv pip install -r requirements.txt --system
+else
+  pip install -q -r requirements.txt
+fi
 
 # HuggingFace login (required for gated Gemma model)
 echo ""
