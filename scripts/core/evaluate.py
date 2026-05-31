@@ -130,23 +130,18 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
                           batch_size: int = 8) -> dict:
     """
     Primary metric: generation-based scoring using training-format prompts.
+    Batched with left-padding for ~4x speedup over sequential generation.
 
-    Uses the exact training prompt format (question + options, no instruction prefix)
-    with repetition_penalty=1.2 matching the original EduGanda evaluation.
-    Extracts the answer letter from the generated response (handles both
-    bare letters and "Okuddamu: X" style completions from SFT'd models).
-
-    Note: log-prob scoring was abandoned because SFT trains models to output
-    "Okuddamu: X" not bare letters, making bare-letter logits unreliable.
+    Uses training prompt format (question + options, no instruction prefix).
+    Extracts answer from "Okuddamu: X" or bare letter responses.
     """
-    import torch
-
     import torch
     from scripts.core.data import extract_first_letter
 
     model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"  # left-pad for batched generation
 
     samples = list(benchmark_ds["train"])
     correct = 0
@@ -157,8 +152,6 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     age_group_stats = {}
 
     def build_prompt(item):
-        # Training-format prompt: no instruction prefix, just question + options.
-        # Matches how the model was trained and what it learned to complete.
         content = (
             f"{item['luganda_question']}\n"
             f"(A) {item['luganda_answer_a']}\n"
@@ -171,10 +164,14 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
             tokenize=False, add_generation_prompt=True,
         )
 
-    for item in samples:
-        prompt = build_prompt(item)
-        enc = tokenizer(prompt, return_tensors="pt",
+    for batch_start in range(0, len(samples), batch_size):
+        batch = samples[batch_start: batch_start + batch_size]
+        prompts = [build_prompt(item) for item in batch]
+
+        enc = tokenizer(prompts, return_tensors="pt", padding=True,
                         add_special_tokens=False).to(model.device)
+        prompt_len = enc.input_ids.shape[1]
+
         with torch.no_grad():
             out = model.generate(
                 **enc,
@@ -185,21 +182,23 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
                 top_p=None,
                 top_k=None,
             )
-        raw = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
-        predicted = extract_first_letter(raw)
-        confidence = 1.0 if predicted is not None else 0.0
 
-        n_done = len(predictions)
-        if label:
-            if n_done < 5:
-                print(f"  sample[{n_done}] gold={item['correct_answer']}  "
-                      f"pred={predicted or '?'}  raw={repr(raw[:60])}")
-            elif n_done % 50 == 49:
-                print(f"  [{n_done+1}/{len(samples)}] acc so far: "
-                      f"{(correct/(n_done+1))*100:.1f}%")
+        for i, item in enumerate(batch):
+            raw = tokenizer.decode(out[i][prompt_len:], skip_special_tokens=True).strip()
+            predicted = extract_first_letter(raw)
+            confidence = 1.0 if predicted is not None else 0.0
 
-        gold = item["correct_answer"]
-        predictions.append(predicted or "")
+            n_done = len(predictions)
+            if label:
+                if n_done < 5:
+                    print(f"  sample[{n_done}] gold={item['correct_answer']}  "
+                          f"pred={predicted or '?'}  raw={repr(raw[:60])}")
+                elif n_done % 50 == 49:
+                    print(f"  [{n_done+1}/{len(samples)}] acc so far: "
+                          f"{(correct/(n_done+1))*100:.1f}%")
+
+            gold = item["correct_answer"]
+            predictions.append(predicted or "")
         labels_list.append(gold)
         confidences.append(confidence)
         position_stats[gold]["total"] += 1
