@@ -189,11 +189,14 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
         predicted = extract_first_letter(raw)
         confidence = 1.0 if predicted is not None else 0.0
 
-        # Print first 5 samples to verify output format
         n_done = len(predictions)
-        if n_done < 5 and label:
-            print(f"  sample[{n_done}] gold={item['correct_answer']}  "
-                  f"pred={predicted or '?'}  raw={repr(raw[:60])}")
+        if label:
+            if n_done < 5:
+                print(f"  sample[{n_done}] gold={item['correct_answer']}  "
+                      f"pred={predicted or '?'}  raw={repr(raw[:60])}")
+            elif n_done % 50 == 49:
+                print(f"  [{n_done+1}/{len(samples)}] acc so far: "
+                      f"{(correct/(n_done+1))*100:.1f}%")
 
         gold = item["correct_answer"]
         predictions.append(predicted or "")
