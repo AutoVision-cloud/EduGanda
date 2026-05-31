@@ -154,15 +154,18 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     age_group_stats = {}
 
     def build_prompt(item):
-        return (
-            f"<start_of_turn>user\n"
+        content = (
             f"Answer with only the letter (A, B, C, or D). Do not explain.\n\n"
             f"{item['luganda_question']}\n"
             f"(A) {item['luganda_answer_a']}\n"
             f"(B) {item['luganda_answer_b']}\n"
             f"(C) {item['luganda_answer_c']}\n"
-            f"(D) {item['luganda_answer_d']}\n"
-            f"<end_of_turn>\n<start_of_turn>model\n"
+            f"(D) {item['luganda_answer_d']}"
+        )
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
     for batch_start in range(0, len(samples), batch_size):
@@ -273,18 +276,21 @@ def evaluate_on_benchmark_generation(model, tokenizer, benchmark_ds, label: str 
     predictions, labels_list = [], []
 
     for item in samples:
-        prompt = (
-            f"<start_of_turn>user\n"
+        content = (
             f"Answer with only the letter (A, B, C, or D). Do not explain.\n\n"
             f"{item['luganda_question']}\n"
             f"(A) {item['luganda_answer_a']}\n"
             f"(B) {item['luganda_answer_b']}\n"
             f"(C) {item['luganda_answer_c']}\n"
-            f"(D) {item['luganda_answer_d']}\n"
-            f"<end_of_turn>\n<start_of_turn>model\n"
+            f"(D) {item['luganda_answer_d']}"
         )
-
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = tokenizer(prompt, return_tensors="pt",
+                           add_special_tokens=False).to(model.device)
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,

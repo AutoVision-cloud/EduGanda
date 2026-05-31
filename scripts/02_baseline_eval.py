@@ -62,13 +62,14 @@ def evaluate_open_generation(model, tokenizer, reward_model, reward_tokenizer,
     results = {"label": label, "n_prompts": len(generation_prompts)}
 
     for penalty, key in [(1.2, "with_penalty"), (1.0, "no_penalty")]:
-        outputs, rep_rates = [], []
-        for prompt in generation_prompts:
-            full_prompt = (
-                f"<start_of_turn>user\n{prompt}<end_of_turn>\n"
-                f"<start_of_turn>model\n"
+        outputs, rep_rates, full_texts = [], [], []
+        for prompt_text in generation_prompts:
+            # apply_chat_template adds BOS + proper special tokens
+            formatted = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt_text}],
+                tokenize=False, add_generation_prompt=True,
             )
-            ids = tokenizer(full_prompt, return_tensors="pt",
+            ids = tokenizer(formatted, return_tensors="pt",
                             add_special_tokens=False).input_ids.to(model.device)
             with torch.no_grad():
                 out = model.generate(
@@ -83,8 +84,10 @@ def evaluate_open_generation(model, tokenizer, reward_model, reward_tokenizer,
             ).strip()
             outputs.append(response)
             rep_rates.append(_repetition_rate(response))
+            # Reward model expects full conversation context
+            full_texts.append(formatted + response)
 
-        scores = _score_texts(outputs, reward_model, reward_tokenizer)
+        scores = _score_texts(full_texts, reward_model, reward_tokenizer)
         results[key] = {
             "mean_reward": round(statistics.mean(scores), 4),
             "std_reward": round(statistics.stdev(scores) if len(scores) > 1 else 0, 4),
