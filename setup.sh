@@ -51,7 +51,7 @@ _install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining deps
 echo "Installing other dependencies..."
-_install transformers==4.50.3 trl==0.12.0 peft==0.14.0 \
+_install "transformers>=4.51.0,<5.0.0" trl==0.12.0 peft==0.14.0 \
     accelerate datasets bitsandbytes scikit-learn scipy \
     matplotlib wandb huggingface_hub mergekit pyyaml llama-cpp-python
 
