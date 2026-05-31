@@ -81,11 +81,15 @@ adapter = trainer.model
 adapter.eval()
 
 print("\n=== EVALUATOR SANITY TEST ===\n")
+from scripts.core.data import extract_first_letter
 
-# --- Test 1: exact training prefix (should get ~100% if model memorised) ---
-print("Test 1: EXACT training prefix (split on <start_of_turn>model\\n)")
-print("If this is <100%, the model did not memorise OR the adapter eval is broken.")
-correct_exact = 0
+# ---------------------------------------------------------------------------
+# Test 1: EXACT training prefix — the decisive test.
+# Model memorised these 20 examples. If it can't get ≥90% here, the
+# training pipeline or adapter inference is broken.
+# ---------------------------------------------------------------------------
+print("Test 1: EXACT training prefix  (requirement: ≥90%)")
+correct_exact, raws_exact = 0, []
 for row in mcq_items:
     text = row["text"]
     if "<start_of_turn>model\n" not in text:
@@ -97,37 +101,62 @@ for row in mcq_items:
                                repetition_penalty=1.2, pad_token_id=tokenizer.eos_token_id,
                                top_p=None, top_k=None)
     raw = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    from scripts.core.data import extract_first_letter
     pred = extract_first_letter(raw)
+    raws_exact.append(raw[:50])
     if pred == row["correct_letter"]:
         correct_exact += 1
-print(f"  Exact prefix accuracy: {correct_exact}/{len(mcq_items)} = {correct_exact/len(mcq_items):.1%}")
-print(f"  → If ~100%: model memorised ✓. Any lower = adapter or merge issue.")
 
-# --- Test 2: reconstructed prompt (what evaluate_on_benchmark uses) ---
-print("\nTest 2: RECONSTRUCTED prompt via evaluate_on_benchmark")
-print("This tests whether the prompt reconstruction matches training format closely enough.")
-print("15%+ invalid=0% means parsing works but prompt mismatch hurts accuracy.")
-print("For BASELINE, what matters is consistency: all models use the same prompt.\n")
+acc_exact = correct_exact / len(mcq_items)
+pass1 = acc_exact >= 0.9
+print(f"  {'✓ PASS' if pass1 else '✗ FAIL'}  accuracy={acc_exact:.1%}  "
+      f"({'training pipeline confirmed working' if pass1 else 'training pipeline broken'})")
+if not pass1:
+    for i, r in enumerate(raws_exact[:5]):
+        print(f"    sample[{i}]: {repr(r)}")
 
-thresholds = {"free generation": 0.3, "forced format": 0.5}  # lowered: reconstruction mismatch expected
-all_pass = True
-for mode, forced in [("free generation", False), ("forced format", True)]:
-    r = evaluate_on_benchmark(
-        adapter, tokenizer, tiny_bench,
-        label=f"sanity ({mode})", forced_format=forced,
-    )
-    threshold = thresholds[mode]
-    passed = r["invalid_parse_rate"] < 0.3  # pass = parser working, not accuracy
-    all_pass = all_pass and passed
-    status = "✓ parser OK" if passed else "✗ parser broken"
-    print(f"  {status}  {mode}: acc={r['accuracy']:.1%}  "
-          f"invalid={r['invalid_parse_rate']:.1%}  dist={r['prediction_distribution']}")
+# ---------------------------------------------------------------------------
+# Test 2: RECONSTRUCTED prompt (what evaluate_on_benchmark uses for baseline).
+# Requirements: invalid rate <15%, accuracy >random (>25% random for 4-way MCQ).
+# NOTE: reconstruction mismatch will likely hurt memorised-example accuracy.
+# This test confirms parser health, NOT knowledge capture.
+# ---------------------------------------------------------------------------
+print("\nTest 2: RECONSTRUCTED prompt — free generation only")
+print("  Requirements: invalid <15%, accuracy meaningful (>random 25% would be ideal).")
+print("  Note: reconstruction mismatch expected to hurt accuracy on memorised examples.")
+r_free = evaluate_on_benchmark(adapter, tokenizer, tiny_bench,
+                                label="sanity (reconstructed free gen)", forced_format=False)
+invalid_ok = r_free["invalid_parse_rate"] < 0.15
+pass2 = invalid_ok
+print(f"  {'✓' if invalid_ok else '✗'} invalid={r_free['invalid_parse_rate']:.1%} "
+      f"({'<15% requirement met' if invalid_ok else '>15% — parser broken'})")
+print(f"  accuracy={r_free['accuracy']:.1%}  dist={r_free['prediction_distribution']}")
 
-print()
-if all_pass:
-    print("✓ Parser is working (low invalid rate). Prompt reconstruction causes accuracy gap,")
-    print("  but ALL models use the same prompt format so cross-model comparisons are valid.")
-    print("  Safe to run 02_baseline_eval.py.")
+# ---------------------------------------------------------------------------
+# Test 3: Forced format — only useful if it does better than free gen.
+# If forced format gives same or worse accuracy on memorised data, don't use it.
+# ---------------------------------------------------------------------------
+print("\nTest 3: RECONSTRUCTED prompt — forced format ('Okuddamu: (')")
+r_forced = evaluate_on_benchmark(adapter, tokenizer, tiny_bench,
+                                  label="sanity (reconstructed forced)", forced_format=True)
+forced_better = r_forced["accuracy"] >= r_free["accuracy"] and r_forced["invalid_parse_rate"] < 0.15
+print(f"  {'✓ better than free gen' if forced_better else '✗ not better — drop forced format'}")
+print(f"  accuracy={r_forced['accuracy']:.1%}  invalid={r_forced['invalid_parse_rate']:.1%}")
+
+# ---------------------------------------------------------------------------
+# Verdict
+# ---------------------------------------------------------------------------
+print("\n" + "="*60)
+if pass1 and pass2:
+    print("✓ Training pipeline confirmed (Test 1 ≥90%).")
+    print("✓ Parser working (Test 2 invalid <15%).")
+    if forced_better:
+        print("✓ Forced format adds value — keep both modes in baseline.")
+    else:
+        print("⚠ Forced format does not improve over free gen — use free gen only for baseline.")
+    print("\nSafe to run 02_baseline_eval.py.")
+    print("Note: reconstruction mismatch means absolute accuracy is unreliable.")
+    print("Report: spread, prediction distribution, and relative changes between models.")
+elif not pass1:
+    print("✗ Test 1 FAILED — training pipeline broken. Fix before proceeding.")
 else:
-    print("✗ Parser broken (high invalid rate). Fix extract_first_letter before proceeding.")
+    print("✗ Test 2 FAILED — parser broken (high invalid rate). Fix extract_first_letter.")
