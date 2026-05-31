@@ -2,104 +2,24 @@
 Hour 2: Baseline Evaluation
 Evaluates ganda-gemma-1b (CPT only) and EduGanda-Gemma-3-1B (reference) on the LLPK benchmark.
 Run BEFORE any training to establish your comparison baseline.
+
+All models evaluated under the same English-instruction, Luganda-question MCQ prompt.
+Uses logit-based scoring (softmax over A/B/C/D token probabilities) for consistency
+with all other evaluation scripts in this project.
 """
 
-import torch
 import json
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import os
+import torch
 from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from scripts.core.evaluate import evaluate_on_benchmark, bootstrap_ci
 
-
-def evaluate_on_benchmark(model, tokenizer, benchmark_ds, n_samples=None, label=""):
-    """
-    Evaluate MCQ accuracy on the LLPK benchmark (pedagogy-luganda-replaced).
-    Uses English instructions + Luganda questions, matching the blog's evaluation setup.
-    """
-    samples = benchmark_ds['train']
-    if n_samples:
-        samples = samples.select(range(min(n_samples, len(samples))))
-
-    correct = 0
-    position_stats = {pos: {"total": 0, "correct": 0} for pos in ["A", "B", "C", "D"]}
-    category_stats = {}
-
-    for item in samples:
-        prompt = (
-            f"<start_of_turn>user\n"
-            f"Answer with only the letter (A, B, C, or D). Do not explain.\n\n"
-            f"{item['luganda_question']}\n"
-            f"(A) {item['luganda_answer_a']}\n"
-            f"(B) {item['luganda_answer_b']}\n"
-            f"(C) {item['luganda_answer_c']}\n"
-            f"(D) {item['luganda_answer_d']}\n"
-            f"<end_of_turn>\n<start_of_turn>model\n"
-        )
-
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=5,
-                temperature=0.01,
-                repetition_penalty=1.2,
-                do_sample=False,
-            )
-
-        response = tokenizer.decode(
-            outputs[0][inputs['input_ids'].shape[1]:],
-            skip_special_tokens=True,
-        ).strip().upper()
-
-        predicted = None
-        for char in response:
-            if char in "ABCD":
-                predicted = char
-                break
-
-        gold = item['correct_answer']
-        position_stats[gold]["total"] += 1
-        if predicted == gold:
-            correct += 1
-            position_stats[gold]["correct"] += 1
-
-        cat = item.get('category', 'unknown')
-        if cat not in category_stats:
-            category_stats[cat] = {"total": 0, "correct": 0}
-        category_stats[cat]["total"] += 1
-        if predicted == gold:
-            category_stats[cat]["correct"] += 1
-
-    total = len(samples)
-    print(f"\n[{label}] Overall: {correct}/{total} = {correct/total:.1%}")
-
-    print("  Per-position accuracy:")
-    accs = []
-    for pos in ["A", "B", "C", "D"]:
-        s = position_stats[pos]
-        if s["total"] > 0:
-            acc = s["correct"] / s["total"]
-            accs.append(acc)
-            print(f"    {pos}: {acc:.1%} ({s['correct']}/{s['total']})")
-
-    spread = (max(accs) - min(accs)) * 100 if accs else 0
-    print(f"  Position bias spread: {spread:.1f} pp")
-
-    print("  Per-category accuracy:")
-    for cat, s in sorted(category_stats.items()):
-        if s["total"] > 0:
-            print(f"    {cat}: {s['correct']/s['total']:.1%} ({s['total']} items)")
-
-    return {
-        "accuracy": correct / total,
-        "position_stats": position_stats,
-        "category_stats": category_stats,
-        "spread": spread,
-    }
-
+os.makedirs("results", exist_ok=True)
 
 benchmark = load_dataset("CraneAILabs/pedagogy-luganda-replaced")
 
-# 1. Starting point: ganda-gemma-1b (Luganda CPT, no education SFT)
+# 1. Starting point: ganda-gemma-1b (Luganda CPT only, no education SFT)
 print("=" * 60)
 print("BASELINE: ganda-gemma-1b")
 print("=" * 60)
@@ -108,12 +28,18 @@ model_base = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
+model_base.eval()
 tok_base = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
+if tok_base.pad_token is None:
+    tok_base.pad_token = tok_base.eos_token
 base_results = evaluate_on_benchmark(model_base, tok_base, benchmark, label="ganda-gemma-1b")
+base_results["ci_lower"], base_results["ci_upper"] = bootstrap_ci(
+    base_results["predictions"], base_results["labels"]
+)[1:]
 del model_base
 torch.cuda.empty_cache()
 
-# 2. Reference: EduGanda (target to match/beat)
+# 2. Reference: EduGanda-Gemma-3-1B (target to match/beat)
 print("\n" + "=" * 60)
 print("REFERENCE: EduGanda-Gemma-3-1B")
 print("=" * 60)
@@ -122,10 +48,33 @@ model_ref = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
+model_ref.eval()
 tok_ref = AutoTokenizer.from_pretrained("CraneAILabs/EduGanda-Gemma-3-1B")
+if tok_ref.pad_token is None:
+    tok_ref.pad_token = tok_ref.eos_token
 ref_results = evaluate_on_benchmark(model_ref, tok_ref, benchmark, label="EduGanda-Gemma-3-1B")
+ref_results["ci_lower"], ref_results["ci_upper"] = bootstrap_ci(
+    ref_results["predictions"], ref_results["labels"]
+)[1:]
 del model_ref
 torch.cuda.empty_cache()
+
+# Summary
+print("\n" + "=" * 60)
+print("BASELINE SUMMARY")
+print("=" * 60)
+for name, r in [("ganda-gemma-1b (base)", base_results), ("EduGanda reference", ref_results)]:
+    acc = r["accuracy"] * 100
+    lo, hi = r.get("ci_lower", 0) * 100, r.get("ci_upper", 0) * 100
+    spread = r["spread"]
+    dist = r.get("prediction_distribution", {})
+    entropy = r.get("prediction_entropy", 0)
+    print(f"\n{name}")
+    print(f"  Accuracy:  {acc:.1f}% [{lo:.1f}%–{hi:.1f}%]")
+    print(f"  Spread:    {spread:.1f}pp")
+    print(f"  Pred dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
+          f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}")
+    print(f"  Entropy:   {entropy:.3f} bits (max 2.0)")
 
 with open("results/baseline_results.json", "w") as f:
     json.dump({"base": base_results, "reference": ref_results}, f, indent=2, default=str)
