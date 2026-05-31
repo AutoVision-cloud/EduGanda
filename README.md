@@ -51,18 +51,44 @@ All experiments use only publicly released models, datasets, and benchmarks.
 
 ## Data
 
-| Asset | HuggingFace ID | Size |
-|-------|---------------|------|
-| Base model (CPT) | `CraneAILabs/ganda-gemma-1b` | 1B |
-| FLN training data | `CraneAILabs/luganda-fln-training-data` | ~1.37k rows |
-| Bilingual exercises | `CraneAILabs/luganda-bilingual-literacy-exercises` | ~6.94k rows |
-| Reward model | `CraneAILabs/luganda-reward-model` | 1B |
-| LLPK benchmark | `CraneAILabs/pedagogy-luganda-replaced` | 299 rows |
-| Reference model | `CraneAILabs/EduGanda-Gemma-3-1B` | 1B |
+| Asset | HuggingFace ID | Actual size |
+|-------|---------------|-------------|
+| Base model (CPT) | `CraneAILabs/ganda-gemma-1b` | 1B params |
+| FLN training data | `CraneAILabs/luganda-fln-training-data` | **1,368 rows** |
+| Bilingual exercises | `CraneAILabs/luganda-bilingual-literacy-exercises` | **3,472 rows** |
+| Reward model | `CraneAILabs/luganda-reward-model` | 1B params |
+| LLPK benchmark | `CraneAILabs/pedagogy-luganda-replaced` | **299 rows** |
+| Reference model | `CraneAILabs/EduGanda-Gemma-3-1B` | 1B params |
 
-**Public-data note:** The reference model reports 17,561 FLN training items; ~8.3k are publicly released. Results reflect a **partial reproduction using released assets** — differences from published numbers are expected and documented.
+**Public-data note:** The reference model reports 17,561 FLN training items; only **1,368** are publicly released (7.8% of the reported total). Results reflect a **partial reproduction using released assets** — differences from published numbers are expected and documented.
 
-**Contamination check:** No overlap detected between benchmark questions and training data (prefix-level check on `luganda_question`).
+**Contamination check:** Zero overlap detected between benchmark questions and FLN training data (prefix-level check). Verified independently.
+
+### FLN position bias (measured)
+
+The FLN training data has a heavily skewed answer-position distribution, causing the model to predict position B far more often than others:
+
+| Position | Count | % of MCQ items |
+|----------|-------|----------------|
+| A | 226 | 19.0% |
+| **B** | **488** | **41.0%** ← overrepresented |
+| C | 308 | 25.9% |
+| D | 168 | 14.1% |
+
+This 27pp spread between B (41%) and D (14%) is the source of the published 52pp accuracy gap (B: 93% vs D: 41% on the benchmark). Option-permutation augmentation addresses this at the training data level.
+
+### Benchmark categories (299 items)
+
+| Category | Items |
+|----------|-------|
+| SEND | 56 |
+| Creative arts | 43 |
+| Maths | 41 |
+| Literacy | 40 |
+| Science | 37 |
+| Social studies | 32 |
+| Technology | 31 |
+| General | 19 |
 
 ---
 
