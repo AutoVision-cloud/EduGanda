@@ -178,17 +178,22 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
         with torch.no_grad():
             out = model.generate(
                 **enc,
-                max_new_tokens=10,
+                max_new_tokens=30,
                 do_sample=False,
                 repetition_penalty=1.2,
                 pad_token_id=tokenizer.eos_token_id,
-                # Suppress top_p/top_k warnings from generation_config when do_sample=False
                 top_p=None,
                 top_k=None,
             )
         raw = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
         predicted = extract_first_letter(raw)
         confidence = 1.0 if predicted is not None else 0.0
+
+        # Print first 5 samples to verify output format
+        n_done = len(predictions)
+        if n_done < 5 and label:
+            print(f"  sample[{n_done}] gold={item['correct_answer']}  "
+                  f"pred={predicted or '?'}  raw={repr(raw[:60])}")
 
         gold = item["correct_answer"]
         predictions.append(predicted or "")
