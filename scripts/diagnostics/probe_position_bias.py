@@ -58,7 +58,7 @@ def probe_model(model_path: str, benchmark_ds, label: str) -> dict:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"\n[Probe] Loading {label} from {model_path}")
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16, device_map="auto")
     tok = AutoTokenizer.from_pretrained(model_path)
 
     hidden_states, labels = extract_hidden_states(model, tok, benchmark_ds)

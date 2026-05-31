@@ -27,7 +27,7 @@ def train_sft(
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         load_in_4bit=True,
         device_map="auto",
     )
@@ -79,7 +79,7 @@ def _build_reward_fn(reward_model_path: str):
 
     reward_model = AutoModelForSequenceClassification.from_pretrained(
         reward_model_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_path)
@@ -124,7 +124,7 @@ def train_grpo(
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
 

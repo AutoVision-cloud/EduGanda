@@ -50,7 +50,7 @@ def main():
     os.makedirs("results/diagnostics", exist_ok=True)
 
     reward_model = AutoModelForSequenceClassification.from_pretrained(
-        "CraneAILabs/luganda-reward-model", torch_dtype=torch.bfloat16, device_map="auto"
+        "CraneAILabs/luganda-reward-model", dtype=torch.bfloat16, device_map="auto"
     )
     reward_tok = AutoTokenizer.from_pretrained("CraneAILabs/luganda-reward-model")
 
@@ -71,7 +71,7 @@ def main():
         if not os.path.isdir(ckpt_path):
             continue
         print(f"Generating and scoring {ckpt_name} completions...")
-        model = AutoModelForCausalLM.from_pretrained(ckpt_path, torch_dtype=torch.bfloat16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(ckpt_path, dtype=torch.bfloat16, device_map="auto")
         tok = AutoTokenizer.from_pretrained(ckpt_path)
         completions = generate_completions(model, tok, sample_prompts[:100])
         del model
