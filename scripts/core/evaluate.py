@@ -166,7 +166,8 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
             tokenize=False, add_generation_prompt=True,
         )
         if forced_format:
-            prompt += "Okuddamu: "
+            # "(A" constrains model to output just the letter next
+            prompt += "Okuddamu: ("
         return prompt
 
     for batch_start in range(0, len(samples), batch_size):
