@@ -129,21 +129,24 @@ def _get_choice_token_ids(tokenizer, prompt_suffix: str) -> dict:
 def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
                           batch_size: int = 8) -> dict:
     """
-    Primary metric: log-prob option scoring over A/B/C/D continuations.
+    Primary metric: generation-based scoring using training-format prompts.
 
-    Batched: processes batch_size items per forward pass using left-padding.
-    With left-padding, all sequences end at position -1, so logits[:, -1, :]
-    gives the next-token distribution for every item simultaneously.
+    Uses the exact training prompt format (question + options, no instruction prefix)
+    with repetition_penalty=1.2 matching the original EduGanda evaluation.
+    Extracts the answer letter from the generated response (handles both
+    bare letters and "Okuddamu: X" style completions from SFT'd models).
+
+    Note: log-prob scoring was abandoned because SFT trains models to output
+    "Okuddamu: X" not bare letters, making bare-letter logits unreliable.
     """
     import torch
+
+    import torch
+    from scripts.core.data import extract_first_letter
 
     model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-
-    PROMPT_SUFFIX = "<end_of_turn>\n<start_of_turn>model\n"
-    choice_token_ids = _get_choice_token_ids(tokenizer, PROMPT_SUFFIX)
 
     samples = list(benchmark_ds["train"])
     correct = 0
@@ -154,8 +157,9 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
     age_group_stats = {}
 
     def build_prompt(item):
+        # Training-format prompt: no instruction prefix, just question + options.
+        # Matches how the model was trained and what it learned to complete.
         content = (
-            f"Answer with only the letter (A, B, C, or D). Do not explain.\n\n"
             f"{item['luganda_question']}\n"
             f"(A) {item['luganda_answer_a']}\n"
             f"(B) {item['luganda_answer_b']}\n"
@@ -164,67 +168,45 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
         )
         return tokenizer.apply_chat_template(
             [{"role": "user", "content": content}],
-            tokenize=False,
-            add_generation_prompt=True,
+            tokenize=False, add_generation_prompt=True,
         )
 
-    for batch_start in range(0, len(samples), batch_size):
-        batch = samples[batch_start: batch_start + batch_size]
-        prompts = [build_prompt(item) for item in batch]
-
-        # Right-padding: real tokens are at positions 0..seq_len-1, padding follows.
-        # Track last real token position per sequence via attention_mask.
-        inputs = tokenizer(
-            prompts, return_tensors="pt", padding=True,
-            add_special_tokens=False
-        ).to(model.device)
-
+    for item in samples:
+        prompt = build_prompt(item)
+        ids = tokenizer(prompt, return_tensors="pt",
+                        add_special_tokens=False).input_ids.to(model.device)
         with torch.no_grad():
-            out = model(**inputs)
-            # Last non-padded position for each sequence
-            last_positions = inputs.attention_mask.sum(dim=1) - 1  # (batch,)
-            last_logits = out.logits[
-                torch.arange(len(batch), device=model.device), last_positions
-            ]  # (batch, vocab)
+            out = model.generate(
+                ids, max_new_tokens=10, do_sample=False,
+                repetition_penalty=1.2, pad_token_id=tokenizer.eos_token_id,
+            )
+        raw = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        predicted = extract_first_letter(raw)
+        confidence = 1.0 if predicted is not None else 0.0
 
-        log_probs_batch = torch.log_softmax(last_logits, dim=-1)  # (batch, vocab)
+        gold = item["correct_answer"]
+        predictions.append(predicted or "")
+        labels_list.append(gold)
+        confidences.append(confidence)
+        position_stats[gold]["total"] += 1
+        if predicted == gold:
+            correct += 1
+            position_stats[gold]["correct"] += 1
 
-        for i, item in enumerate(batch):
-            log_prob_scores = {}
-            for choice in ANSWER_TOKENS:
-                tok_id = choice_token_ids.get(choice)
-                if tok_id is not None:
-                    log_prob_scores[choice] = log_probs_batch[i, tok_id].item()
-                else:
-                    log_prob_scores[choice] = score_choice(model, tokenizer, prompts[i], choice)
+        cat = item.get("category", "unknown")
+        if cat not in category_stats:
+            category_stats[cat] = {"total": 0, "correct": 0}
+        category_stats[cat]["total"] += 1
+        if predicted == gold:
+            category_stats[cat]["correct"] += 1
 
-            predicted = max(log_prob_scores, key=log_prob_scores.get)
-            scores_tensor = torch.tensor(list(log_prob_scores.values()))
-            confidence = float(torch.softmax(scores_tensor, dim=0)[ANSWER_TOKENS.index(predicted)])
-
-            gold = item["correct_answer"]
-            predictions.append(predicted)
-            labels_list.append(gold)
-            confidences.append(confidence)
-            position_stats[gold]["total"] += 1
+        for field, store in [("subdomain", subdomain_stats), ("age_group", age_group_stats)]:
+            key = item.get(field, "unknown") or "unknown"
+            if key not in store:
+                store[key] = {"total": 0, "correct": 0}
+            store[key]["total"] += 1
             if predicted == gold:
-                correct += 1
-                position_stats[gold]["correct"] += 1
-
-            cat = item.get("category", "unknown")
-            if cat not in category_stats:
-                category_stats[cat] = {"total": 0, "correct": 0}
-            category_stats[cat]["total"] += 1
-            if predicted == gold:
-                category_stats[cat]["correct"] += 1
-
-            for field, store in [("subdomain", subdomain_stats), ("age_group", age_group_stats)]:
-                key = item.get(field, "unknown") or "unknown"
-                if key not in store:
-                    store[key] = {"total": 0, "correct": 0}
-                store[key]["total"] += 1
-                if predicted == gold:
-                    store[key]["correct"] += 1
+                store[key]["correct"] += 1
 
     total = len(samples)
     accs = [s["correct"] / s["total"] for s in position_stats.values() if s["total"] > 0]
