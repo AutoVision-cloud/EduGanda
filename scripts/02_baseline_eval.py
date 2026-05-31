@@ -147,6 +147,7 @@ reward_model = AutoModelForSequenceClassification.from_pretrained(
     "CraneAILabs/luganda-reward-model",
     torch_dtype=torch.bfloat16,
     device_map="auto",
+    trust_remote_code=True,
 )
 reward_tokenizer = AutoTokenizer.from_pretrained("CraneAILabs/luganda-reward-model")
 print(f"  Reward model: {reward_model.config.num_labels} labels, "

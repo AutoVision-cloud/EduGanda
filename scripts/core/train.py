@@ -81,6 +81,7 @@ def _build_reward_fn(reward_model_path: str):
         reward_model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        trust_remote_code=True,
     )
     reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_path)
 

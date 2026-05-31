@@ -50,7 +50,8 @@ def main():
     os.makedirs("results/diagnostics", exist_ok=True)
 
     reward_model = AutoModelForSequenceClassification.from_pretrained(
-        "CraneAILabs/luganda-reward-model", torch_dtype=torch.bfloat16, device_map="auto"
+        "CraneAILabs/luganda-reward-model", torch_dtype=torch.bfloat16,
+        device_map="auto", trust_remote_code=True,
     )
     reward_tok = AutoTokenizer.from_pretrained("CraneAILabs/luganda-reward-model")
 
