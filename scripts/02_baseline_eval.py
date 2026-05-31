@@ -18,7 +18,6 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
 from scripts.core.evaluate import (
     evaluate_on_benchmark,
-    evaluate_on_benchmark_generation,
     bootstrap_ci,
     check_tokenization,
 )
@@ -107,12 +106,9 @@ def eval_model(model_id, label, benchmark, reward_model, reward_tokenizer, gen_p
     model, tok = _load_model(model_id)
 
     print("\n--- MCQ Accuracy ---")
-    results = evaluate_on_benchmark(model, tok, benchmark, label=f"{label} (log-prob)")
+    results = evaluate_on_benchmark(model, tok, benchmark, label=label)
     results["ci_lower"], results["ci_upper"] = bootstrap_ci(
         results["predictions"], results["labels"])[1:]
-    gen = evaluate_on_benchmark_generation(model, tok, benchmark,
-                                           label=f"{label} (generation)")
-    results["generation_accuracy"] = gen["accuracy"]
 
     print("\n--- Open-ended Generation ---")
     results["generation_eval"] = _eval_generation_quality(
@@ -190,9 +186,8 @@ for name, r in [("ganda-gemma-1b", base_results), ("EduGanda reference", ref_res
     dist = r.get("prediction_distribution", {})
     ge = r.get("generation_eval", {})
     print(f"\n{name}")
-    print(f"  MCQ log-prob:   {r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
+    print(f"  MCQ accuracy:  {r['accuracy']*100:.1f}% [{lo:.1f}%–{hi:.1f}%]  "
           f"spread={r['spread']:.1f}pp")
-    print(f"  MCQ generation: {r.get('generation_accuracy',0)*100:.1f}%")
     print(f"  Pred dist: A={dist.get('A',0):.1%} B={dist.get('B',0):.1%} "
           f"C={dist.get('C',0):.1%} D={dist.get('D',0):.1%}  "
           f"entropy={r.get('prediction_entropy',0):.3f}")

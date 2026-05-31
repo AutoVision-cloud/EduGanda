@@ -82,8 +82,8 @@ Outperforms Gemma 3 4B (4× larger) on LLPK.
 
 All models in this project are evaluated under the same fixed protocol. **Do not change this after SFT training begins** — internal comparisons are only valid if the evaluator is constant.
 
-- **Scorer:** Log-probability option scoring — scores `prompt + "A/B/C/D"` via a single forward pass, picks highest log-probability. Tokenization verified (A/B/C/D each encode to 1 token).
-- **Prompt format:** Gemma chat template (`apply_chat_template`) with English instruction + Luganda question + Luganda options. No instruction variant tested but not adopted.
+- **Scorer:** Generation-based — training-format prompt (Luganda question + options, no instruction prefix), `repetition_penalty=1.2`, extracts first standalone A/B/C/D letter from output (handles both bare letters and "Okuddamu: X" completions).
+- **Prompt format:** Gemma chat template (`apply_chat_template`) with Luganda question + options only. Log-prob scoring was abandoned: SFT trains models to output "Okuddamu: X" not bare letters, making first-token logits unreliable post-training.
 - **Benchmark:** `CraneAILabs/pedagogy-luganda-replaced` (299 items, both `cdpk_main` and `cdpk_send` splits).
 - **Secondary metric:** Generation-based scoring with `repetition_penalty=1.2`, for deployment-style comparison.
 - **Per-item predictions saved** for all runs — enables before/after analysis and McNemar tests.
