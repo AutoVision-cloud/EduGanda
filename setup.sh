@@ -19,19 +19,26 @@ else
   cd EduGanda
 fi
 
-# Install Python deps (use uv if available for faster installs, fallback to pip)
-echo "Installing dependencies..."
-if ! command -v uv &>/dev/null; then
-  echo "Installing uv for faster dependency resolution..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$PATH"
+# Create a persistent venv on the network volume (survives pod restarts)
+VENV_DIR="/workspace/venv"
+if [ ! -d "$VENV_DIR" ]; then
+  echo "Creating virtual environment at $VENV_DIR..."
+  python -m venv "$VENV_DIR"
 fi
+source "$VENV_DIR/bin/activate"
+echo "export VIRTUAL_ENV=$VENV_DIR" >> ~/.bashrc
+echo "export PATH=$VENV_DIR/bin:\$PATH" >> ~/.bashrc
+echo "source $VENV_DIR/bin/activate" >> ~/.bashrc
 
-if command -v uv &>/dev/null; then
-  uv pip install -r requirements.txt --system
-else
-  pip install -q -r requirements.txt
-fi
+# Install PyTorch for CUDA 12.4 (compatible with RunPod driver 12040)
+echo "Installing PyTorch (cu124)..."
+pip install -q torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124
+
+# Install remaining deps
+echo "Installing other dependencies..."
+pip install -q transformers==4.50.3 trl==0.12.0 peft==0.14.0 \
+    accelerate datasets bitsandbytes scikit-learn scipy \
+    matplotlib wandb huggingface_hub mergekit pyyaml llama-cpp-python
 
 # HuggingFace login (required for gated Gemma model)
 echo ""
