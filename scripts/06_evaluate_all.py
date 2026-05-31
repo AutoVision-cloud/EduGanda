@@ -28,7 +28,7 @@ if missing:
 all_results = {}
 for name, path in models_to_eval.items():
     print(f"\n{'='*60}\nEvaluating: {name}\n{'='*60}")
-    model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa")
     tok = AutoTokenizer.from_pretrained(path)
     result = evaluate_on_benchmark(model, tok, benchmark, label=name)
     acc, lo, hi = bootstrap_ci(result["predictions"], result["labels"])

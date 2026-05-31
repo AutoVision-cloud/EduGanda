@@ -46,6 +46,7 @@ model_base = AutoModelForCausalLM.from_pretrained(
     "CraneAILabs/ganda-gemma-1b",
     torch_dtype=torch.bfloat16,
     device_map="auto",
+    attn_implementation="sdpa",
 )
 model_base.eval()
 tok_base = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
@@ -66,6 +67,7 @@ model_ref = AutoModelForCausalLM.from_pretrained(
     "CraneAILabs/EduGanda-Gemma-3-1B",
     torch_dtype=torch.bfloat16,
     device_map="auto",
+    attn_implementation="sdpa",
 )
 model_ref.eval()
 tok_ref = AutoTokenizer.from_pretrained("CraneAILabs/EduGanda-Gemma-3-1B")

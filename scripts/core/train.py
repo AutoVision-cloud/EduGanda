@@ -126,6 +126,7 @@ def train_grpo(
         model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        attn_implementation="sdpa",
     )
 
     compute_rewards = _build_reward_fn(reward_model_path)

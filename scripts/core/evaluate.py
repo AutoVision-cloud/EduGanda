@@ -25,11 +25,8 @@ def check_tokenization(tokenizer):
 def score_choice(model, tokenizer, prompt: str, choice: str) -> float:
     """
     Computes sum of log-probabilities for `choice` tokens continuing `prompt`.
-
-    More principled than first-token logit:
-    - Handles multi-token choices (e.g. "Okuddamu: A") if used
-    - Avoids tokenizer ambiguity: tokenizes prompt+choice as a full string,
-      so SentencePiece space-prefix handling is correct in context
+    Handles multi-token choices correctly. For single-token choices, prefer
+    score_all_choices() which does this in one forward pass instead of four.
     """
     import torch
 
@@ -60,20 +57,62 @@ def score_choice(model, tokenizer, prompt: str, choice: str) -> float:
     return total
 
 
+def score_all_choices(model, tokenizer, prompt: str, choices: list = ANSWER_TOKENS) -> dict:
+    """
+    Scores all choices in ONE forward pass on the prompt — 4x faster than
+    calling score_choice() separately for each option.
+
+    Mathematically equivalent to score_choice() for single-token choices:
+    transformer attention at position t depends only on tokens 0..t, so
+    the logit for the choice token is identical whether we feed prompt alone
+    or prompt+choice. SentencePiece context is handled by tokenizing
+    prompt+choice to get the correct in-context token ID, then looking it
+    up in the prompt-only forward pass.
+
+    Falls back to score_choice() for any choice that tokenizes to >1 token.
+    """
+    import torch
+
+    # Get the in-context token ID for each choice (handles space-prefix correctly)
+    prompt_len = len(tokenizer(prompt, add_special_tokens=False).input_ids)
+    choice_token_ids = {}
+    multi_token_choices = []
+    for choice in choices:
+        full_ids = tokenizer(prompt + choice, add_special_tokens=False).input_ids
+        n_choice = len(full_ids) - prompt_len
+        if n_choice == 1:
+            choice_token_ids[choice] = full_ids[-1]
+        else:
+            multi_token_choices.append(choice)
+
+    # Single forward pass on the prompt
+    prompt_ids = tokenizer(
+        prompt, return_tensors="pt", add_special_tokens=False
+    ).input_ids.to(model.device)
+
+    with torch.no_grad():
+        out = model(prompt_ids)
+        last_logits = out.logits[0, -1, :]  # (vocab_size,)
+
+    log_probs = torch.log_softmax(last_logits, dim=-1)
+
+    scores = {
+        choice: log_probs[tok_id].item()
+        for choice, tok_id in choice_token_ids.items()
+    }
+
+    # Fall back for any multi-token choices
+    for choice in multi_token_choices:
+        scores[choice] = score_choice(model, tokenizer, prompt, choice)
+
+    return scores
+
+
 def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> dict:
     """
     Primary metric: log-prob option scoring over A/B/C/D continuations.
-
-    For each item, scores prompt+"A", prompt+"B", prompt+"C", prompt+"D" and
-    picks the highest log-probability. This avoids generation quirks (output
-    format, repetition penalty, parser errors) and is consistent across all
-    models regardless of how they were trained to format their output.
-
-    Confidence = softmax-normalised probability of the predicted choice over
-    the four options, usable for calibration curves.
-
-    Secondary metric (deployment-style greedy generation) available via
-    evaluate_on_benchmark_generation().
+    Uses score_all_choices() — one forward pass per item (4x faster than
+    calling score_choice per option).
     """
     import torch
 
@@ -101,7 +140,7 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
             f"<end_of_turn>\n<start_of_turn>model\n"
         )
 
-        log_prob_scores = {c: score_choice(model, tokenizer, prompt, c) for c in ANSWER_TOKENS}
+        log_prob_scores = score_all_choices(model, tokenizer, prompt)
         predicted = max(log_prob_scores, key=log_prob_scores.get)
 
         # Confidence = softmax over 4 log-prob scores

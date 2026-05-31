@@ -85,7 +85,7 @@ def main():
     else:
         eval_path = sft_path
 
-    model = AutoModelForCausalLM.from_pretrained(eval_path, torch_dtype=torch.bfloat16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(eval_path, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="sdpa")
     tok = AutoTokenizer.from_pretrained(eval_path)
     result = evaluate_on_benchmark(model, tok, benchmark, label=f"{args.axis}={args.value}")
     acc, lo, hi = bootstrap_ci(result["predictions"], result["labels"])
