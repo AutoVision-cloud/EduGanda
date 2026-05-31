@@ -9,7 +9,7 @@ from collections import Counter
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 sys.path.insert(0, '/workspace/EduGanda')
-from scripts.core.evaluate import _get_choice_token_ids, ANSWER_TOKENS
+from scripts.core.evaluate import _get_choice_token_ids, score_choice, ANSWER_TOKENS
 from scripts.core.data import extract_first_letter
 
 MODEL = "CraneAILabs/EduGanda-Gemma-3-1B"
@@ -82,8 +82,10 @@ for idx in range(N):
                                   repetition_penalty=1.2, pad_token_id=tok.eos_token_id)
         return tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
 
-    sc_std,  ids_s = score(base_prompt, ids_std)
-    sc_okud, ids_o = score(okud_prompt, ids_okud)
+    sc_std, ids_s = score(base_prompt, ids_std)
+    # Okuddamu: score full continuation "Okuddamu: A/B/C/D" via score_choice
+    sc_okud = {c: score_choice(model, tok, base_prompt, "Okuddamu: " + c) for c in ANSWER_TOKENS}
+    ids_o = tok(okud_prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
 
     p_lp_std  = max(sc_std,  key=sc_std.get)
     p_lp_okud = max(sc_okud, key=sc_okud.get)
