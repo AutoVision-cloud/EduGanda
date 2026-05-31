@@ -11,13 +11,75 @@ if TYPE_CHECKING:
 ANSWER_TOKENS = ["A", "B", "C", "D"]
 
 
-def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> dict:
+def check_tokenization(tokenizer):
     """
-    Evaluates model on LLPK benchmark using logit-based MCQ scoring.
-    Returns accuracy, predictions, labels, confidences, per-position/category stats, spread.
+    Prints how A/B/C/D are tokenized with and without a leading space.
+    Run once before evaluating to verify you are scoring the intended tokens.
+    """
+    print("Tokenization check:")
+    for c in ["A", "B", "C", "D", " A", " B", " C", " D"]:
+        ids = tokenizer.encode(c, add_special_tokens=False)
+        print(f"  {repr(c):6s} → {ids}")
+
+
+def score_choice(model, tokenizer, prompt: str, choice: str) -> float:
+    """
+    Computes sum of log-probabilities for `choice` tokens continuing `prompt`.
+
+    More principled than first-token logit:
+    - Handles multi-token choices (e.g. "Okuddamu: A") if used
+    - Avoids tokenizer ambiguity: tokenizes prompt+choice as a full string,
+      so SentencePiece space-prefix handling is correct in context
     """
     import torch
-    from scripts.core.data import extract_first_letter
+
+    full_text = prompt + choice
+    prompt_ids = tokenizer(
+        prompt, return_tensors="pt", add_special_tokens=False
+    ).input_ids.to(model.device)
+    full_ids = tokenizer(
+        full_text, return_tensors="pt", add_special_tokens=False
+    ).input_ids.to(model.device)
+
+    n_choice_tokens = full_ids.shape[1] - prompt_ids.shape[1]
+    if n_choice_tokens <= 0:
+        return float("-inf")
+
+    with torch.no_grad():
+        outputs = model(full_ids)
+        logits = outputs.logits  # (1, seq_len, vocab)
+
+    log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
+    target_ids = full_ids[:, 1:]
+
+    choice_start = prompt_ids.shape[1] - 1
+    total = sum(
+        log_probs[0, choice_start + i, target_ids[0, choice_start + i]].item()
+        for i in range(n_choice_tokens)
+    )
+    return total
+
+
+def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> dict:
+    """
+    Primary metric: log-prob option scoring over A/B/C/D continuations.
+
+    For each item, scores prompt+"A", prompt+"B", prompt+"C", prompt+"D" and
+    picks the highest log-probability. This avoids generation quirks (output
+    format, repetition penalty, parser errors) and is consistent across all
+    models regardless of how they were trained to format their output.
+
+    Confidence = softmax-normalised probability of the predicted choice over
+    the four options, usable for calibration curves.
+
+    Secondary metric (deployment-style greedy generation) available via
+    evaluate_on_benchmark_generation().
+    """
+    import torch
+
+    model.eval()
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     samples = benchmark_ds["train"]
     correct = 0
@@ -26,8 +88,6 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
     category_stats = {}
     subdomain_stats = {}
     age_group_stats = {}
-
-    answer_token_ids = [tokenizer.convert_tokens_to_ids(t) for t in ANSWER_TOKENS]
 
     for item in samples:
         prompt = (
@@ -41,15 +101,13 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
             f"<end_of_turn>\n<start_of_turn>model\n"
         )
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            out = model(**inputs)
-            next_logits = out.logits[0, -1, :]
-            answer_logits = next_logits[answer_token_ids]
-            probs = torch.softmax(answer_logits, dim=-1)
-            pred_idx = int(probs.argmax())
-            predicted = ANSWER_TOKENS[pred_idx]
-            confidence = float(probs[pred_idx])
+        log_prob_scores = {c: score_choice(model, tokenizer, prompt, c) for c in ANSWER_TOKENS}
+        predicted = max(log_prob_scores, key=log_prob_scores.get)
+
+        # Confidence = softmax over 4 log-prob scores
+        scores_tensor = torch.tensor(list(log_prob_scores.values()))
+        probs = torch.softmax(scores_tensor, dim=0)
+        confidence = float(probs[ANSWER_TOKENS.index(predicted)])
 
         gold = item["correct_answer"]
         predictions.append(predicted)
@@ -101,6 +159,69 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
         "prediction_distribution": pred_dist,
         "prediction_entropy": pred_entropy,
     }
+
+
+def evaluate_on_benchmark_generation(model, tokenizer, benchmark_ds, label: str = "") -> dict:
+    """
+    Secondary metric: greedy generation scoring.
+
+    Approximates deployment behaviour — how the model actually responds when
+    asked a question. Uses repetition_penalty=1.2 as required by EduGanda.
+    Results may differ from log-prob scoring due to output formatting and
+    parser sensitivity. Report alongside primary metric for completeness.
+    """
+    from scripts.core.data import extract_first_letter
+
+    model.eval()
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    import torch
+
+    samples = benchmark_ds["train"]
+    correct = 0
+    predictions, labels_list = [], []
+
+    for item in samples:
+        prompt = (
+            f"<start_of_turn>user\n"
+            f"Answer with only the letter (A, B, C, or D). Do not explain.\n\n"
+            f"{item['luganda_question']}\n"
+            f"(A) {item['luganda_answer_a']}\n"
+            f"(B) {item['luganda_answer_b']}\n"
+            f"(C) {item['luganda_answer_c']}\n"
+            f"(D) {item['luganda_answer_d']}\n"
+            f"<end_of_turn>\n<start_of_turn>model\n"
+        )
+
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=5,
+                do_sample=False,
+                repetition_penalty=1.2,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
+        ).strip()
+
+        predicted = extract_first_letter(response)
+        gold = item["correct_answer"]
+        predictions.append(predicted or "")
+        labels_list.append(gold)
+        if predicted == gold:
+            correct += 1
+
+    total = len(samples)
+    accuracy = correct / total
+    if label:
+        print(f"[{label} generation] accuracy={accuracy:.1%}")
+
+    return {"accuracy": accuracy, "predictions": predictions, "labels": labels_list}
 
 
 def bootstrap_ci(
