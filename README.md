@@ -78,13 +78,31 @@ Outperforms Gemma 3 4B (4× larger) on LLPK.
 
 ---
 
+## Evaluation Protocol (frozen)
+
+All models in this project are evaluated under the same fixed protocol. **Do not change this after SFT training begins** — internal comparisons are only valid if the evaluator is constant.
+
+- **Scorer:** Log-probability option scoring — scores `prompt + "A/B/C/D"` via a single forward pass, picks highest log-probability. Tokenization verified (A/B/C/D each encode to 1 token).
+- **Prompt format:** Gemma chat template (`apply_chat_template`) with English instruction + Luganda question + Luganda options. No instruction variant tested but not adopted.
+- **Benchmark:** `CraneAILabs/pedagogy-luganda-replaced` (299 items, both `cdpk_main` and `cdpk_send` splits).
+- **Secondary metric:** Generation-based scoring with `repetition_penalty=1.2`, for deployment-style comparison.
+- **Per-item predictions saved** for all runs — enables before/after analysis and McNemar tests.
+
+**Reproducibility note:** The published 66% PCK accuracy for EduGanda-Gemma-3-1B could not be reproduced using the released public assets and this evaluation protocol. Both `pedagogy-luganda-replaced` and `pedagogy-luganda-reviewed` gave ~20-25% for EduGanda under log-prob scoring (approximately random chance). The published result likely used a different prompt template, evaluation pipeline, or benchmark subset not publicly documented. We therefore treat EduGanda as a **reference under our protocol** and focus on relative comparisons across models using the same evaluator.
+
+**Primary success criterion:** Lower answer-position spread and less collapsed prediction distribution.
+**Secondary:** Same or better accuracy under our protocol.
+**Tertiary:** Better generation format adherence (reward model scores).
+
+---
+
 ## Our Approach vs. the Original
 
 | Aspect | Original (Fab AI / Crane AI Labs) | This project |
 |--------|-----------------------------------|--------------|
 | Bias fix | Balanced with English examples | **Option-permutation augmentation** (permutes A/B/C/D, more principled) |
 | Training data | 13,200 Luganda curriculum items | 1,368 FLN + 3,472 exercises (publicly released only) |
-| Evaluation | Generation-based scoring | **Log-probability option scoring** (avoids parser sensitivity) |
+| Evaluation | Generation-based (not fully documented) | **Log-prob option scoring**, frozen protocol, per-item predictions saved |
 | Contamination | "Verified zero contamination" (no methodology given) | TF-IDF semantic similarity check, documented |
 | Merge ablation | Single ratio tested (70/30) | **80/20, 70/30, 60/40, DARE-TIES** with bootstrap CIs |
 | Bias analysis | Per-position accuracy only | Per-position + **prediction distribution + entropy + hidden-state probe** |
