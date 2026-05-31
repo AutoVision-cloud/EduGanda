@@ -10,15 +10,16 @@ All experiments use only publicly released models, datasets, and benchmarks.
 
 ## Contributions
 
-- Reproduced baseline evaluation for `ganda-gemma-1b` and `EduGanda-Gemma-3-1B`
-- Audited released FLN training data for MCQ answer-position imbalance
-- Implemented **option-permutation augmentation**: randomly permutes answer options and updates the correct letter, generating genuine positional variety without duplicating examples
-- Evaluated overall accuracy, per-position accuracy, category accuracy, position-bias spread, **prediction distribution**, and **prediction entropy** per model
-- Ablated LEARNER/GRPO merge ratios (linear 80/20, 70/30, 60/40 + DARE-TIES)
-- Ablated LoRA rank, SFT epochs, and data balancing strategy with bootstrap CIs and McNemar tests
-- Trained a logistic regression probe on hidden states to locate where position bias lives in the representations
-- Quantized best checkpoint to GGUF (Q4\_K\_M, Q8\_0) for on-device inference
-- Documented public-data limitations and benchmark-contamination checks
+- Reproduced baseline evaluation for `ganda-gemma-1b` and `EduGanda-Gemma-3-1B` using log-probability option scoring with verified tokenization
+- Audited released FLN training data for MCQ answer-position imbalance; measured 27pp spread (B: 41% vs D: 14%)
+- Implemented **option-permutation augmentation**: randomly permutes answer options and updates the correct letter, generating genuine positional variety without duplicating examples — a more principled approach than the original's English-example balancing
+- Evaluated overall accuracy, per-position accuracy, per-subdomain/age-group accuracy, position-bias spread, **prediction distribution**, and **prediction entropy** per model
+- Ran TF-IDF semantic contamination check between benchmark and training data (documented methodology vs. original undocumented claim)
+- Measured tokenizer fertility: Luganda/English tokens-per-word ratio using `CraneAILabs/ganda-gemma-1b`
+- Ablated LEARNER/GRPO merge ratios (linear 80/20, 70/30, 60/40 + DARE-TIES) with bootstrap CIs and McNemar tests
+- Ablated LoRA rank, SFT epochs, and data balancing strategy
+- Trained logistic regression probe on hidden states to locate where position bias lives in representations
+- Quantized best checkpoint to GGUF (Q4\_K\_M, Q8\_0) and benchmarked inference speed vs. accuracy drop
 
 ---
 
@@ -49,6 +50,47 @@ All experiments use only publicly released models, datasets, and benchmarks.
 
 ---
 
+## Background: The Original Pipeline
+
+From the [Fab AI blog post](https://www.fab-ai.org/initiatives/ai-for-education/edtech-quality/resources/blog/fine-tuning-small-language-model-for-foundational-literacy-in-uganda) (May 2026):
+
+```
+Gemma 3 1B
+    ↓  Continued pre-training (70/30 Luganda-English split)
+    ↓
+READER (MCQ SFT, ~13.2K items)     GRPO-600 (Unified RL, 2K steps,
+LEARNER (+ pedagogy, lesson plans)  anti-repetition, tool-calling)
+    ↓                                        ↓
+    └──────── BRIDGE: 70% LEARNER + 30% GRPO-600 ──────┘
+                         ↓
+                EduGanda-Gemma-3-1B
+```
+
+**Published results:** 66% LLPK / 58.8% LLK benchmark (vs. 51% / 39% base model).
+Outperforms Gemma 3 4B (4× larger) on LLPK.
+
+**Key findings from the original work:**
+- Small models cannot hold multiple skills simultaneously — model blending was essential to prevent catastrophic forgetting
+- 35,000 curated training pairs outperformed 1.53M machine-translated pairs (quality > volume)
+- Vocabulary layer required a much lower learning rate for coherent Luganda sentence generation
+- Repetition penalty at inference outperformed GRPO for controlling output loops
+- Deployment: LiteRT mobile runtime, **12–18 tokens/sec** on mid-range Android, **978MB in memory**
+
+---
+
+## Our Approach vs. the Original
+
+| Aspect | Original (Fab AI / Crane AI Labs) | This project |
+|--------|-----------------------------------|--------------|
+| Bias fix | Balanced with English examples | **Option-permutation augmentation** (permutes A/B/C/D, more principled) |
+| Training data | 13,200 Luganda curriculum items | 1,368 FLN + 3,472 exercises (publicly released only) |
+| Evaluation | Generation-based scoring | **Log-probability option scoring** (avoids parser sensitivity) |
+| Contamination | "Verified zero contamination" (no methodology given) | TF-IDF semantic similarity check, documented |
+| Merge ablation | Single ratio tested (70/30) | **80/20, 70/30, 60/40, DARE-TIES** with bootstrap CIs |
+| Bias analysis | Per-position accuracy only | Per-position + **prediction distribution + entropy + hidden-state probe** |
+
+---
+
 ## Data
 
 | Asset | HuggingFace ID | Actual size |
@@ -60,9 +102,9 @@ All experiments use only publicly released models, datasets, and benchmarks.
 | LLPK benchmark | `CraneAILabs/pedagogy-luganda-replaced` | **299 rows** |
 | Reference model | `CraneAILabs/EduGanda-Gemma-3-1B` | 1B params |
 
-**Public-data note:** The reference model reports 17,561 FLN training items; only **1,368** are publicly released (7.8% of the reported total). Results reflect a **partial reproduction using released assets** — differences from published numbers are expected and documented.
+**Public-data note:** The original pipeline used **13,200 Luganda curriculum items**; only **1,368** are publicly released (10.4% of the training set used). Results reflect a partial reproduction using released assets — differences from published numbers are expected and documented.
 
-**Contamination check:** Zero overlap detected between benchmark questions and FLN training data (prefix-level check). Verified independently.
+**Contamination check:** Zero overlap detected (prefix-level + TF-IDF semantic similarity ≥ 0.7). Verified independently.
 
 ### FLN position bias (measured)
 
@@ -75,7 +117,7 @@ The FLN training data has a heavily skewed answer-position distribution, causing
 | C | 308 | 25.9% |
 | D | 168 | 14.1% |
 
-This 27pp spread between B (41%) and D (14%) is the source of the published 52pp accuracy gap (B: 93% vs D: 41% on the benchmark). Option-permutation augmentation addresses this at the training data level.
+This 27pp training-data spread is the source of the published 52pp accuracy gap (B: 93% vs D: 41% on the benchmark). The original fix used English examples; we use option-permutation augmentation which directly attacks the positional artifact without introducing cross-lingual noise.
 
 ### Benchmark categories (299 items)
 
@@ -90,15 +132,21 @@ This 27pp spread between B (41%) and D (14%) is the source of the published 52pp
 | Technology | 31 |
 | General | 19 |
 
+### On-device deployment context
+
+The model targets offline use on low-cost Android phones in Uganda. The reference model uses **1.07 GB storage (Q8_0)** — downloadable for ~1,000 UGX ($0.27 USD) on a local MTN data bundle. This makes quantization accuracy meaningful: every percentage point of accuracy lost to quantization has a real pedagogical cost.
+
 ---
 
 ## Reproduce
 
 ```bash
-# On an A100/A10G GPU instance (RunPod / Modal)
+# On a GPU instance (RunPod A10G recommended)
 bash <(curl -s https://raw.githubusercontent.com/AutoVision-cloud/EduGanda/main/setup.sh)
 
+python scripts/diagnostics/tokenizer_fertility.py  # no GPU needed, run first
 python scripts/01_explore_data.py
+python scripts/diagnostics/semantic_contamination.py
 python scripts/02_baseline_eval.py
 python scripts/03_sft_learner.py     # permutation augmentation on by default
 python scripts/04_grpo.py            # skip if unstable; LEARNER-only is valid
@@ -127,11 +175,11 @@ python scripts/deploy/quantize_and_benchmark.py
 
 ## Limitations
 
-- Training data gap: ~8.3k items vs 17.5k in reference model
-- GRPO stability: small models with unfamiliar reward models can diverge; LEARNER-only ablations are still reported
-- Contamination check is prefix-level only (semantic overlap not verified)
-- Human evaluation of generated lessons not performed
-- On-device battery/cold-start profiling not included in this study
+- **Training data gap:** 1,368 public items vs. 13,200 used in the original (10.4% available)
+- **GRPO stability:** small models with unfamiliar reward models can diverge; LEARNER-only ablations are reported separately. Note: the original found repetition penalty outperformed GRPO for repetition control.
+- Contamination check is TF-IDF semantic similarity — semantic paraphrase overlap not verified
+- Human evaluation of generated lesson plans not performed
+- On-device battery/cold-start profiling not included (reference: 12–18 tok/s on mid-range Android)
 
 ---
 
