@@ -1,7 +1,7 @@
 """
-Diagnostic: compare prompt formats to find which matches the published 66%.
-The training data has NO English instruction — just the Luganda question + options.
-Our "Answer with only the letter..." prefix is likely out-of-distribution.
+Diagnostic: check benchmark splits and try pedagogy-luganda-reviewed.
+The published 66% might be on the 'reviewed' dataset, not 'replaced'.
+Also inspect the split column to see if there's a test subset.
 """
 import sys
 import torch
@@ -13,7 +13,7 @@ from scripts.core.evaluate import _get_choice_token_ids, ANSWER_TOKENS
 from scripts.core.data import extract_first_letter
 
 MODEL = "CraneAILabs/EduGanda-Gemma-3-1B"
-N = 20
+N = 40
 
 print(f"Loading {MODEL}...")
 model = AutoModelForCausalLM.from_pretrained(
@@ -24,86 +24,71 @@ if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 model.eval()
 
-bench = load_dataset("CraneAILabs/pedagogy-luganda-replaced")["train"]
-fln   = load_dataset("CraneAILabs/luganda-fln-training-data", "all")["train"]
-
-# Show actual training data format
-print("=== TRAINING DATA EXAMPLE ===")
-mcq_example = next(r for r in fln if r["format"] == "mcq")
-print(mcq_example["text"][:600])
-print(f"\ncorrect_letter: {mcq_example['correct_letter']}")
-print()
-
-# Gold distribution
-gold_dist = Counter(bench[i]["correct_answer"] for i in range(len(bench)))
-print(f"Gold distribution (299 items): {dict(gold_dist)}\n")
+# --- Inspect both benchmarks ---
+for ds_name in ["CraneAILabs/pedagogy-luganda-replaced",
+                "CraneAILabs/pedagogy-luganda-reviewed"]:
+    ds = load_dataset(ds_name)["train"]
+    split_dist = Counter(r.get("split", "?") for r in ds)
+    gold_dist  = Counter(r["correct_answer"] for r in ds)
+    status_dist = Counter(r.get("review_status", "?") for r in ds)
+    proc_dist  = Counter(r.get("processing_status", "?") for r in ds)
+    print(f"\n=== {ds_name} ({len(ds)} rows) ===")
+    print(f"  split values:     {dict(split_dist)}")
+    print(f"  gold distribution:{dict(gold_dist)}")
+    print(f"  review_status:    {dict(status_dist)}")
+    print(f"  processing_status:{dict(proc_dist)}")
+    print(f"  first item split={ds[0].get('split')} review_status={ds[0].get('review_status')}")
 
 SUFFIX = "<end_of_turn>\n<start_of_turn>model\n"
 choice_ids = _get_choice_token_ids(tok, SUFFIX)
 
-def lp_score(prompt_str):
-    ids = tok(prompt_str, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
-    with torch.no_grad():
-        logits = model(ids).logits[0, -1, :]
-    lp = torch.log_softmax(logits, dim=-1)
-    scores = {c: lp[choice_ids[c]].item() for c in ANSWER_TOKENS if choice_ids[c]}
-    return max(scores, key=scores.get), scores
+def eval_on(bench, label, instruction="", n=None):
+    items = list(bench)[:n] if n else list(bench)
+    correct_lp = correct_gen = 0
+    dist_lp = Counter()
+    for item in items:
+        content = ""
+        if instruction:
+            content = instruction + "\n\n"
+        content += (
+            f"{item['luganda_question']}\n"
+            f"(A) {item['luganda_answer_a']}\n"
+            f"(B) {item['luganda_answer_b']}\n"
+            f"(C) {item['luganda_answer_c']}\n"
+            f"(D) {item['luganda_answer_d']}"
+        )
+        prompt = tok.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False, add_generation_prompt=True
+        )
+        ids = tok(prompt, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
+        with torch.no_grad():
+            logits = model(ids).logits[0, -1, :]
+        lp = torch.log_softmax(logits, dim=-1)
+        scores = {c: lp[choice_ids[c]].item() for c in ANSWER_TOKENS if choice_ids[c]}
+        pred_lp = max(scores, key=scores.get)
+        dist_lp[pred_lp] += 1
+        if pred_lp == item["correct_answer"]: correct_lp += 1
 
-def gen_score(prompt_str):
-    ids = tok(prompt_str, return_tensors="pt", add_special_tokens=False).input_ids.to(model.device)
-    with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=50, do_sample=False,
-                              repetition_penalty=1.2, pad_token_id=tok.eos_token_id)
-    raw = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
-    return extract_first_letter(raw), raw
+        # Generation
+        with torch.no_grad():
+            out = model.generate(ids, max_new_tokens=50, do_sample=False,
+                                  repetition_penalty=1.2, pad_token_id=tok.eos_token_id)
+        raw = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        pred_gen = extract_first_letter(raw)
+        if pred_gen == item["correct_answer"]: correct_gen += 1
 
-def make_prompt(item, instruction=""):
-    content = ""
-    if instruction:
-        content = instruction + "\n\n"
-    content += (
-        f"{item['luganda_question']}\n"
-        f"(A) {item['luganda_answer_a']}\n"
-        f"(B) {item['luganda_answer_b']}\n"
-        f"(C) {item['luganda_answer_c']}\n"
-        f"(D) {item['luganda_answer_d']}"
-    )
-    return tok.apply_chat_template(
-        [{"role": "user", "content": content}],
-        tokenize=False, add_generation_prompt=True
-    )
+    n_total = len(items)
+    print(f"  {label:<50} LP={correct_lp}/{n_total}={correct_lp/n_total:.1%}  "
+          f"Gen={correct_gen}/{n_total}={correct_gen/n_total:.1%}  dist={dict(dist_lp)}")
 
-formats = {
-    "with_instr":    "Answer with only the letter (A, B, C, or D). Do not explain.",
-    "no_instr":      "",
-    "en_short":      "Choose the correct answer: A, B, C, or D.",
-}
+print("\n\n=== ACCURACY COMPARISON ===")
+for ds_name, short in [("CraneAILabs/pedagogy-luganda-replaced", "replaced"),
+                        ("CraneAILabs/pedagogy-luganda-reviewed",  "reviewed")]:
+    bench = load_dataset(ds_name)["train"]
+    print(f"\nDataset: {ds_name}")
+    eval_on(bench, f"{short} / no_instr",    instruction="", n=N)
+    eval_on(bench, f"{short} / with_instr",
+            instruction="Answer with only the letter (A, B, C, or D). Do not explain.", n=N)
 
-correct_lp = {k: 0 for k in formats}
-correct_gen = {k: 0 for k in formats}
-dist_lp = {k: Counter() for k in formats}
-
-print(f"{'#':>3}  gold  " + "  ".join(f"lp_{k[:8]}" for k in formats))
-print("-"*80)
-
-for idx in range(N):
-    item = bench[idx]
-    gold = item["correct_answer"]
-
-    row = f"[{idx:2d}]  {gold}   "
-    for k, instr in formats.items():
-        prompt = make_prompt(item, instr)
-        pred_lp, _ = lp_score(prompt)
-        pred_gen, raw = gen_score(prompt)
-        dist_lp[k][pred_lp] += 1
-        if pred_lp == gold: correct_lp[k] += 1
-        if pred_gen == gold: correct_gen[k] += 1
-        m = "✓" if pred_lp == gold else "✗"
-        row += f"  {pred_lp}{m}(gen:{pred_gen or '?'} {repr(raw[:15])})"
-    print(row)
-
-print(f"\n{'Format':<15} LP_acc  Gen_acc  Distribution")
-for k in formats:
-    print(f"  {k:<13} {correct_lp[k]}/{N}={correct_lp[k]/N:.0%}    "
-          f"{correct_gen[k]}/{N}={correct_gen[k]/N:.0%}    {dict(dist_lp[k])}")
-print(f"\nExpected EduGanda: ~66% (published)")
+print("\nExpected EduGanda: ~66% PCK / ~58.8% LLK")
