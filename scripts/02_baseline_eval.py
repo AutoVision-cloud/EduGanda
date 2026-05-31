@@ -4,8 +4,9 @@ Evaluates ganda-gemma-1b (CPT only) and EduGanda-Gemma-3-1B (reference) on the L
 Run BEFORE any training to establish your comparison baseline.
 
 All models evaluated under the same English-instruction, Luganda-question MCQ prompt.
-Uses logit-based scoring (softmax over A/B/C/D token probabilities) for consistency
-with all other evaluation scripts in this project.
+Primary metric: log-probability option scoring — scores prompt+"A/B/C/D" via a full
+forward pass and picks the highest log-probability. Avoids generation quirks and
+parser sensitivity. Tokenization is verified before evaluation begins.
 """
 
 import json
@@ -13,9 +14,27 @@ import os
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from scripts.core.evaluate import evaluate_on_benchmark, bootstrap_ci
+from scripts.core.evaluate import evaluate_on_benchmark, bootstrap_ci, check_tokenization
 
 os.makedirs("results", exist_ok=True)
+
+# --- Tokenization verification ---
+# Confirm A/B/C/D each tokenize to exactly 1 token under the model tokenizer.
+# This is a prerequisite for fair log-prob option scoring: if any answer label
+# tokenizes differently (e.g. " A" vs "A"), score_choice still handles it
+# correctly, but we log the evidence so the claim is documentable.
+print("=" * 60)
+print("TOKENIZATION VERIFICATION")
+print("=" * 60)
+_tok_check = AutoTokenizer.from_pretrained("CraneAILabs/ganda-gemma-1b")
+check_tokenization(_tok_check)
+print()
+for letter in ["A", "B", "C", "D"]:
+    n = len(_tok_check.encode(letter, add_special_tokens=False))
+    status = "✓" if n == 1 else f"WARNING: {n} tokens"
+    print(f"  '{letter}' → {n} token(s)  {status}")
+del _tok_check
+print()
 
 benchmark = load_dataset("CraneAILabs/pedagogy-luganda-replaced")
 
