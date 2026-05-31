@@ -173,14 +173,20 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "",
 
     for item in samples:
         prompt = build_prompt(item)
-        ids = tokenizer(prompt, return_tensors="pt",
-                        add_special_tokens=False).input_ids.to(model.device)
+        enc = tokenizer(prompt, return_tensors="pt",
+                        add_special_tokens=False).to(model.device)
         with torch.no_grad():
             out = model.generate(
-                ids, max_new_tokens=10, do_sample=False,
-                repetition_penalty=1.2, pad_token_id=tokenizer.eos_token_id,
+                **enc,
+                max_new_tokens=10,
+                do_sample=False,
+                repetition_penalty=1.2,
+                pad_token_id=tokenizer.eos_token_id,
+                # Suppress top_p/top_k warnings from generation_config when do_sample=False
+                top_p=None,
+                top_k=None,
             )
-        raw = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        raw = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
         predicted = extract_first_letter(raw)
         confidence = 1.0 if predicted is not None else 0.0
 
@@ -276,10 +282,12 @@ def evaluate_on_benchmark_generation(model, tokenizer, benchmark_ds, label: str 
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=5,
+                max_new_tokens=10,
                 do_sample=False,
                 repetition_penalty=1.2,
                 pad_token_id=tokenizer.eos_token_id,
+                top_p=None,
+                top_k=None,
             )
 
         response = tokenizer.decode(

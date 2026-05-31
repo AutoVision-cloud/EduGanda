@@ -48,6 +48,15 @@ def test_extract_first_letter_finds_abcd():
     assert extract_first_letter("") is None
 
 
+def test_extract_first_letter_okuddamu_format():
+    # SFT model output format
+    assert extract_first_letter("Okuddamu: C\n\nOption C focuses on...") == "C"
+    assert extract_first_letter("Okuddamu: A") == "A"
+    assert extract_first_letter("okuddamu: d") == "D"
+    # Okuddamu takes priority over later letters
+    assert extract_first_letter("Okuddamu: B\n\nOption A is wrong") == "B"
+
+
 # --- Permutation augmentation tests ---
 
 def _make_chat_item(correct_letter="B", opts=("opt1", "opt2", "opt3", "opt4")):

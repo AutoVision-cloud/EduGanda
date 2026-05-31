@@ -47,10 +47,18 @@ def balance_by_position(
 
 
 def extract_first_letter(text: str) -> Optional[str]:
-    """Extract the first standalone A/B/C/D letter from a model response string."""
+    """
+    Extract the answer letter from a model response.
+    Handles both SFT-style 'Okuddamu: X' outputs and bare letter responses.
+    """
     import re
-    match = re.search(r'\b([ABCD])\b', text.upper())
-    return match.group(1) if match else None
+    # SFT models output "Okuddamu: X" (Luganda for "Answer: X") — check first
+    m = re.search(r'[Oo]kuddamu\s*:\s*([ABCD])', text)
+    if m:
+        return m.group(1).upper()
+    # Fall back to first standalone A/B/C/D (handles base model outputs)
+    m = re.search(r'\b([ABCD])\b', text.upper())
+    return m.group(1) if m else None
 
 
 def load_fln_dataset(subset: str = "all") -> "Dataset":
