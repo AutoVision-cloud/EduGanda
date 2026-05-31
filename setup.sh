@@ -54,6 +54,11 @@ else
   echo "export WANDB_MODE=disabled" >> ~/.bashrc
 fi
 
+# Add project root to PYTHONPATH so `from scripts.core.x import y` works
+PROJ_DIR="$(pwd)"
+export PYTHONPATH="$PROJ_DIR"
+echo "export PYTHONPATH=\"$PROJ_DIR\"" >> ~/.bashrc
+
 # Create output directories
 mkdir -p results/diagnostics results/ablations results/deploy
 
