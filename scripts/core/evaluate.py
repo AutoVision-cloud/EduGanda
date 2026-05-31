@@ -108,17 +108,41 @@ def score_all_choices(model, tokenizer, prompt: str, choices: list = ANSWER_TOKE
     return scores
 
 
+def _get_choice_token_ids(tokenizer, prompt_suffix: str) -> dict:
+    """
+    Pre-computes the in-context token ID for each answer letter.
+    Uses the prompt suffix (the part after the question) to get the correct
+    SentencePiece token in context. Called once before the eval loop.
+    """
+    ids = {}
+    suffix_len = len(tokenizer(prompt_suffix, add_special_tokens=False).input_ids)
+    for choice in ANSWER_TOKENS:
+        full = tokenizer(prompt_suffix + choice, add_special_tokens=False).input_ids
+        n_choice = len(full) - suffix_len
+        if n_choice == 1:
+            ids[choice] = full[-1]
+        else:
+            ids[choice] = None  # multi-token, will fall back to score_choice
+    return ids
+
+
 def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> dict:
     """
     Primary metric: log-prob option scoring over A/B/C/D continuations.
-    Uses score_all_choices() — one forward pass per item (4x faster than
-    calling score_choice per option).
+
+    Optimised: pre-computes choice token IDs once, then does exactly
+    ONE tokenizer call + ONE forward pass per benchmark item.
     """
     import torch
 
     model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Pre-compute choice token IDs using the fixed prompt suffix.
+    # All prompts end with this string, so the token IDs are stable.
+    PROMPT_SUFFIX = "<end_of_turn>\n<start_of_turn>model\n"
+    choice_token_ids = _get_choice_token_ids(tokenizer, PROMPT_SUFFIX)
 
     samples = benchmark_ds["train"]
     correct = 0
@@ -140,7 +164,22 @@ def evaluate_on_benchmark(model, tokenizer, benchmark_ds, label: str = "") -> di
             f"<end_of_turn>\n<start_of_turn>model\n"
         )
 
-        log_prob_scores = score_all_choices(model, tokenizer, prompt)
+        # ONE tokenizer call + ONE forward pass per item
+        prompt_ids = tokenizer(
+            prompt, return_tensors="pt", add_special_tokens=False
+        ).input_ids.to(model.device)
+
+        with torch.no_grad():
+            last_logits = model(prompt_ids).logits[0, -1, :]
+
+        log_probs = torch.log_softmax(last_logits, dim=-1)
+        log_prob_scores = {}
+        for choice in ANSWER_TOKENS:
+            tok_id = choice_token_ids.get(choice)
+            if tok_id is not None:
+                log_prob_scores[choice] = log_probs[tok_id].item()
+            else:
+                log_prob_scores[choice] = score_choice(model, tokenizer, prompt, choice)
         predicted = max(log_prob_scores, key=log_prob_scores.get)
 
         # Confidence = softmax over 4 log-prob scores
