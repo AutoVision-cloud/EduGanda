@@ -149,13 +149,17 @@ print("\n" + "="*60)
 if pass1 and pass2:
     print("✓ Training pipeline confirmed (Test 1 ≥90%).")
     print("✓ Parser working (Test 2 invalid <15%).")
-    if forced_better:
-        print("✓ Forced format adds value — keep both modes in baseline.")
+    if r_forced["accuracy"] > r_free["accuracy"] + 0.05:
+        print("  Forced format marginally better — keep as diagnostic only.")
     else:
-        print("⚠ Forced format does not improve over free gen — use free gen only for baseline.")
-    print("\nSafe to run 02_baseline_eval.py.")
-    print("Note: reconstruction mismatch means absolute accuracy is unreliable.")
-    print("Report: spread, prediction distribution, and relative changes between models.")
+        print("  Forced format same accuracy as free gen — diagnostic only, not primary metric.")
+    print()
+    print("Safe to run baselines for DIAGNOSTIC COMPARISON.")
+    print("NOT safe to interpret absolute MCQ accuracy as model knowledge.")
+    print()
+    print("Primary metrics: prediction distribution, entropy, position-bias spread.")
+    print("Framing: 'measures prediction distribution and answer-position collapse")
+    print("under a fixed prompt' — not reproduction of published 66%.")
 elif not pass1:
     print("✗ Test 1 FAILED — training pipeline broken. Fix before proceeding.")
 else:

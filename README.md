@@ -88,11 +88,12 @@ All models in this project are evaluated under the same fixed protocol. **Do not
 - **Secondary metric:** Generation-based scoring with `repetition_penalty=1.2`, for deployment-style comparison.
 - **Per-item predictions saved** for all runs — enables before/after analysis and McNemar tests.
 
-**Reproducibility note:** The published 66% PCK accuracy for EduGanda-Gemma-3-1B could not be reproduced using the released public assets and this evaluation protocol. Both `pedagogy-luganda-replaced` and `pedagogy-luganda-reviewed` gave ~20-25% for EduGanda under log-prob scoring (approximately random chance). The published result likely used a different prompt template, evaluation pipeline, or benchmark subset not publicly documented. We therefore treat EduGanda as a **reference under our protocol** and focus on relative comparisons across models using the same evaluator.
+**Reproducibility note:** The model card reports PCK accuracy (66% EduGanda, 51% base) but **does not release the exact MCQ prompt template or scoring script**. The only published usage example uses open-ended lesson generation, not MCQ answering. We therefore could not reproduce the 66% number. We use a documented local evaluation protocol and report all models under the same protocol — absolute numbers should not be compared to the published 66%, only models within this study should be compared to each other.
 
-**Primary success criterion:** Lower answer-position spread and less collapsed prediction distribution.
-**Secondary:** Same or better accuracy under our protocol.
-**Tertiary:** Better generation format adherence (reward model scores).
+**Primary metrics:** Prediction distribution uniformity, answer-position spread, and prediction entropy — not raw accuracy. Our benchmark reconstruction does not reproduce published absolute accuracy, but it reliably measures prediction distribution and answer-position collapse under a fixed prompt.
+
+**Secondary:** Raw accuracy under our protocol (relative comparisons only — do not compare to published 66%).
+**Tertiary:** Generation format adherence (does the model output "Okuddamu: X" consistently?).
 
 ---
 
